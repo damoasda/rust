@@ -49,4 +49,6 @@ ENV HOSTS=x86_64-unknown-linux-musl \
 
 ENV RUSTFLAGS="-C target-feature=-crt-static"
 
-ENV SCRIPT python2.7 ../x.py dist --host $HOSTS --target $HOSTS
+ENV SCRIPT \
+      python2.7 ../x.py test --target $HOSTS && \
+      python2.7 ../x.py dist --host $HOSTS --target $HOSTS

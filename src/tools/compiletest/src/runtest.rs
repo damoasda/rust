@@ -1602,6 +1602,7 @@ impl<'test> TestCx<'test> {
                 None
             } else if self.config.target.contains("cloudabi")
                 || self.config.target.contains("emscripten")
+                || (self.config.target.contains("musl") && !aux_props.force_host)
                 || self.config.target.contains("wasm32")
             {
                 // We primarily compile all auxiliary libraries as dynamic libraries
@@ -1609,8 +1610,10 @@ impl<'test> TestCx<'test> {
                 // for the test suite (otherwise including libstd statically in all
                 // executables takes up quite a bit of space).
                 //
-                // For targets like Emscripten, however, there is no support for
-                // dynamic libraries so we just go back to building a normal library.
+                // For targets like MUSL or Emscripten, however, there is no support for
+                // dynamic libraries so we just go back to building a normal library. Note,
+                // however, that for MUSL if the library is built with `force_host` then
+                // it's ok to be a dylib as the host should always support dylibs.
                 Some("lib")
             } else {
                 Some("dylib")
@@ -1842,17 +1845,9 @@ impl<'test> TestCx<'test> {
             None => {}
         }
 
-        // Musl toolchain is build on linux-gnu host
-        // but with proper setup it can behave almost* like native linux-musl.
-        // One difference is "cc" which will link to glibc; force musl cc.
         if self.props.force_host {
             self.maybe_add_external_args(&mut rustc,
                                          self.split_maybe_args(&self.config.host_rustcflags));
-            if self.config.target.contains("musl") {
-                if let Some(ref linker) = self.config.linker {
-                    rustc.arg(format!("-Clinker={}", linker));
-                }
-            }
         } else {
             self.maybe_add_external_args(&mut rustc,
                                          self.split_maybe_args(&self.config.target_rustcflags));
@@ -1860,16 +1855,7 @@ impl<'test> TestCx<'test> {
                 if let Some(ref linker) = self.config.linker {
                     rustc.arg(format!("-Clinker={}", linker));
                 }
-            } else if self.config.target.contains("musl") {
-                if let Some(ref linker) = self.config.linker {
-                    rustc.arg(format!("--linker={}", linker));
-                }
             }
-        }
-
-        // Use dynamic musl for tests because static doesn't allow creating dylibs
-        if self.config.target.contains("musl") {
-            rustc.arg("-Ctarget-feature=-crt-static");
         }
 
         rustc.args(&self.props.compile_flags);
@@ -2655,12 +2641,6 @@ impl<'test> TestCx<'test> {
         // compiler flags set in the test cases:
         cmd.env_remove("RUSTFLAGS");
 
-        // Use dynamic musl for tests because static doesn't allow creating dylibs
-        if self.config.target.contains("musl") {
-            cmd.env("RUSTFLAGS", "-Ctarget-feature=-crt-static")
-                .env("IS_MUSL_HOST", "1");
-        }
-
         if self.config.target.contains("msvc") && self.config.cc != "" {
             // We need to pass a path to `lib.exe`, so assume that `cc` is `cl.exe`
             // and that `lib.exe` lives next to it.
@@ -2683,13 +2663,8 @@ impl<'test> TestCx<'test> {
                 .env("CC", format!("'{}' {}", self.config.cc, cflags))
                 .env("CXX", format!("'{}'", &self.config.cxx));
         } else {
-            let cflags = if self.config.target.contains("musl") {
-                self.config.cflags.replace("-static", "")
-            } else {
-                self.config.cflags.to_string()
-            };
-            cmd.env("CC", format!("{} {}", self.config.cc, cflags))
-                .env("CXX", format!("{} {}", self.config.cxx, cflags))
+            cmd.env("CC", format!("{} {}", self.config.cc, self.config.cflags))
+                .env("CXX", format!("{} {}", self.config.cxx, self.config.cflags))
                 .env("AR", &self.config.ar);
 
             if self.config.target.contains("windows") {

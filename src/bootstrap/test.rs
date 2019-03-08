@@ -1636,9 +1636,8 @@ impl Step for Crate {
         // libstd, then what we're actually testing is the libstd produced in
         // stage1. Reflect that here by updating the compiler that we're working
         // with automatically.
-        // FIXME(mati865): do similar for the other branch if this is correct
         let compiler = if builder.force_use_stage1(compiler, target) {
-            builder.compiler(1, builder.config.build)
+            builder.compiler(1, compiler.host)
         } else {
             compiler.clone()
         };
@@ -1802,10 +1801,6 @@ impl Step for CrateRustdoc {
 
         cargo.arg("--");
         cargo.args(&builder.config.cmd.test_args());
-
-        if target.contains("musl") {
-            cargo.arg("'-Ctarget-feature=-crt-static'");
-        }
 
         if !builder.config.verbose_tests {
             cargo.arg("--quiet");

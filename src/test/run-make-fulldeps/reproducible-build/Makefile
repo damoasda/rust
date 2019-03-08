@@ -1,11 +1,4 @@
 -include ../tools.mk
-
-# ignore-musl
-#
-# diff:
-# -/checkout/obj/build/x86_64-unknown-linux-musl/test/run-make-fulldeps/reproducible-build/reproducible-build/rustcORhwur/libunwind-cfdf9e23c318976b.rlib: 6220632559893696134
-# +/checkout/obj/build/x86_64-unknown-linux-musl/test/run-make-fulldeps/reproducible-build/reproducible-build/rustcMaw0kI/libunwind-cfdf9e23c318976b.rlib: 6220632559893696134
-
 all:  \
 	smoke \
 	debug \
