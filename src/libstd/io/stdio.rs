@@ -11,15 +11,15 @@ use crate::sys::stdio;
 use crate::sys_common::remutex::{ReentrantMutex, ReentrantMutexGuard};
 use crate::thread::LocalKey;
 
-/// Stdout used by print! and println! macros
 thread_local! {
+    /// Stdout used by print! and println! macros
     static LOCAL_STDOUT: RefCell<Option<Box<dyn Write + Send>>> = {
         RefCell::new(None)
     }
 }
 
-/// Stderr used by eprint! and eprintln! macros, and panics
 thread_local! {
+    /// Stderr used by eprint! and eprintln! macros, and panics
     static LOCAL_STDERR: RefCell<Option<Box<dyn Write + Send>>> = {
         RefCell::new(None)
     }
@@ -405,7 +405,7 @@ pub struct StdoutLock<'a> {
 /// use std::io::{self, Write};
 ///
 /// fn main() -> io::Result<()> {
-///     io::stdout().write(b"hello world")?;
+///     io::stdout().write_all(b"hello world")?;
 ///
 ///     Ok(())
 /// }
@@ -420,7 +420,7 @@ pub struct StdoutLock<'a> {
 ///     let stdout = io::stdout();
 ///     let mut handle = stdout.lock();
 ///
-///     handle.write(b"hello world")?;
+///     handle.write_all(b"hello world")?;
 ///
 ///     Ok(())
 /// }
@@ -460,7 +460,7 @@ impl Stdout {
     ///     let stdout = io::stdout();
     ///     let mut handle = stdout.lock();
     ///
-    ///     handle.write(b"hello world")?;
+    ///     handle.write_all(b"hello world")?;
     ///
     ///     Ok(())
     /// }
@@ -558,7 +558,7 @@ pub struct StderrLock<'a> {
 /// use std::io::{self, Write};
 ///
 /// fn main() -> io::Result<()> {
-///     io::stderr().write(b"hello world")?;
+///     io::stderr().write_all(b"hello world")?;
 ///
 ///     Ok(())
 /// }
@@ -573,7 +573,7 @@ pub struct StderrLock<'a> {
 ///     let stderr = io::stderr();
 ///     let mut handle = stderr.lock();
 ///
-///     handle.write(b"hello world")?;
+///     handle.write_all(b"hello world")?;
 ///
 ///     Ok(())
 /// }
@@ -613,7 +613,7 @@ impl Stderr {
     ///     let stderr = io::stderr();
     ///     let mut handle = stderr.lock();
     ///
-    ///     handle.write(b"hello world")?;
+    ///     handle.write_all(b"hello world")?;
     ///
     ///     Ok(())
     /// }

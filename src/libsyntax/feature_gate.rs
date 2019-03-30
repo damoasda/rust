@@ -1042,7 +1042,7 @@ pub const BUILTIN_ATTRIBUTES: &[(&str, AttributeType, AttributeTemplate, Attribu
                                              "rustc_attrs",
                                              "internal rustc attributes will never be stable",
                                              cfg_fn!(rustc_attrs))),
-    ("rustc_item_path", Whitelisted, template!(Word), Gated(Stability::Unstable,
+    ("rustc_def_path", Whitelisted, template!(Word), Gated(Stability::Unstable,
                                            "rustc_attrs",
                                            "internal rustc attributes will never be stable",
                                            cfg_fn!(rustc_attrs))),
@@ -1176,7 +1176,7 @@ pub const BUILTIN_ATTRIBUTES: &[(&str, AttributeType, AttributeTemplate, Attribu
            "dropck_eyepatch",
            "may_dangle has unstable semantics and may be removed in the future",
            cfg_fn!(dropck_eyepatch))),
-    ("unwind", Whitelisted, template!(List: "allowed"), Gated(Stability::Unstable,
+    ("unwind", Whitelisted, template!(List: "allowed|aborts"), Gated(Stability::Unstable,
                                   "unwind_attributes",
                                   "#[unwind] is experimental",
                                   cfg_fn!(unwind_attributes))),
@@ -1289,9 +1289,8 @@ pub struct GatedCfg {
 
 impl GatedCfg {
     pub fn gate(cfg: &ast::MetaItem) -> Option<GatedCfg> {
-        let name = cfg.name().as_str();
         GATED_CFGS.iter()
-                  .position(|info| info.0 == name)
+                  .position(|info| cfg.check_name(info.0))
                   .map(|idx| {
                       GatedCfg {
                           span: cfg.span,
@@ -1342,7 +1341,7 @@ macro_rules! gate_feature {
 impl<'a> Context<'a> {
     fn check_attribute(&self, attr: &ast::Attribute, is_macro: bool) {
         debug!("check_attribute(attr = {:?})", attr);
-        let name = attr.name().as_str();
+        let name = attr.name_or_empty();
         for &(n, ty, _template, ref gateage) in BUILTIN_ATTRIBUTES {
             if name == n {
                 if let Gated(_, name, desc, ref has_feature) = *gateage {
@@ -1351,7 +1350,7 @@ impl<'a> Context<'a> {
                             self, has_feature, attr.span, name, desc, GateStrength::Hard
                         );
                     }
-                } else if name == "doc" {
+                } else if n == "doc" {
                     if let Some(content) = attr.meta_item_list() {
                         if content.iter().any(|c| c.check_name("include")) {
                             gate_feature!(self, external_doc, attr.span,
@@ -1837,8 +1836,12 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                 gate_feature_post!(&self, box_syntax, e.span, EXPLAIN_BOX_SYNTAX);
             }
             ast::ExprKind::Type(..) => {
-                gate_feature_post!(&self, type_ascription, e.span,
-                                  "type ascription is experimental");
+                // To avoid noise about type ascription in common syntax errors, only emit if it
+                // is the *only* error.
+                if self.context.parse_sess.span_diagnostic.err_count() == 0 {
+                    gate_feature_post!(&self, type_ascription, e.span,
+                                       "type ascription is experimental");
+                }
             }
             ast::ExprKind::ObsoleteInPlace(..) => {
                 // these get a hard error in ast-validation
@@ -2008,7 +2011,7 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
 }
 
 pub fn get_features(span_handler: &Handler, krate_attrs: &[ast::Attribute],
-                    crate_edition: Edition) -> Features {
+                    crate_edition: Edition, allow_features: &Option<Vec<String>>) -> Features {
     fn feature_removed(span_handler: &Handler, span: Span, reason: Option<&str>) {
         let mut err = struct_span_err!(span_handler, span, E0557, "feature has been removed");
         if let Some(reason) = reason {
@@ -2055,15 +2058,14 @@ pub fn get_features(span_handler: &Handler, krate_attrs: &[ast::Attribute],
         };
 
         for mi in list {
-            let name = if let Some(word) = mi.word() {
-                word.name()
-            } else {
-                continue
-            };
+            if !mi.is_word() {
+                continue;
+            }
 
-            if incomplete_features.iter().any(|f| *f == name.as_str()) {
+            let name = mi.name_or_empty();
+            if incomplete_features.iter().any(|f| name == *f) {
                 span_handler.struct_span_warn(
-                    mi.span,
+                    mi.span(),
                     &format!(
                         "the feature `{}` is incomplete and may cause the compiler to crash",
                         name
@@ -2101,18 +2103,19 @@ pub fn get_features(span_handler: &Handler, krate_attrs: &[ast::Attribute],
         };
 
         for mi in list {
-            let name = if let Some(word) = mi.word() {
-                word.name()
-            } else {
-                span_err!(span_handler, mi.span, E0556,
-                          "malformed feature, expected just one word");
-                continue
+            let name = match mi.ident() {
+                Some(ident) if mi.is_word() => ident.name,
+                _ => {
+                    span_err!(span_handler, mi.span(), E0556,
+                            "malformed feature, expected just one word");
+                    continue
+                }
             };
 
             if let Some(edition) = edition_enabled_features.get(&name) {
                 struct_span_warn!(
                     span_handler,
-                    mi.span,
+                    mi.span(),
                     E0705,
                     "the feature `{}` is included in the Rust {} edition",
                     name,
@@ -2127,25 +2130,34 @@ pub fn get_features(span_handler: &Handler, krate_attrs: &[ast::Attribute],
             }
 
             if let Some((.., set)) = ACTIVE_FEATURES.iter().find(|f| name == f.0) {
-                set(&mut features, mi.span);
-                features.declared_lang_features.push((name, mi.span, None));
+                if let Some(allowed) = allow_features.as_ref() {
+                    if allowed.iter().find(|f| *f == name.as_str()).is_none() {
+                        span_err!(span_handler, mi.span(), E0725,
+                                  "the feature `{}` is not in the list of allowed features",
+                                  name);
+                        continue;
+                    }
+                }
+
+                set(&mut features, mi.span());
+                features.declared_lang_features.push((name, mi.span(), None));
                 continue
             }
 
             let removed = REMOVED_FEATURES.iter().find(|f| name == f.0);
             let stable_removed = STABLE_REMOVED_FEATURES.iter().find(|f| name == f.0);
             if let Some((.., reason)) = removed.or(stable_removed) {
-                feature_removed(span_handler, mi.span, *reason);
+                feature_removed(span_handler, mi.span(), *reason);
                 continue
             }
 
             if let Some((_, since, ..)) = ACCEPTED_FEATURES.iter().find(|f| name == f.0) {
                 let since = Some(Symbol::intern(since));
-                features.declared_lang_features.push((name, mi.span, since));
+                features.declared_lang_features.push((name, mi.span(), since));
                 continue
             }
 
-            features.declared_lib_features.push((name, mi.span));
+            features.declared_lib_features.push((name, mi.span()));
         }
     }
 

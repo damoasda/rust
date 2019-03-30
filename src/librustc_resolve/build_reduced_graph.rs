@@ -131,12 +131,9 @@ impl<'a> Resolver<'a> {
         // so prefixes are prepended with crate root segment if necessary.
         // The root is prepended lazily, when the first non-empty prefix or terminating glob
         // appears, so imports in braced groups can have roots prepended independently.
-        // 2015 identifiers used on global 2018 edition enter special "virtual 2015 mode", don't
-        // get crate root prepended, but get special treatment during in-scope resolution instead.
         let is_glob = if let ast::UseTreeKind::Glob = use_tree.kind { true } else { false };
         let crate_root = match prefix_iter.peek() {
-            Some(seg) if !seg.ident.is_path_segment_keyword() &&
-                         seg.ident.span.rust_2015() && self.session.rust_2015() => {
+            Some(seg) if !seg.ident.is_path_segment_keyword() && seg.ident.span.rust_2015() => {
                 Some(seg.ident.span.ctxt())
             }
             None if is_glob && use_tree.span.rust_2015() => {
@@ -306,7 +303,7 @@ impl<'a> Resolver<'a> {
                 }
 
                 // Empty groups `a::b::{}` are turned into synthetic `self` imports
-                // `a::b::c::{self as _}`, so that their prefixes are correctly
+                // `a::b::c::{self as __dummy}`, so that their prefixes are correctly
                 // resolved and checked for privacy/stability/etc.
                 if items.is_empty() && !empty_for_self(&prefix) {
                     let new_span = prefix[prefix.len() - 1].ident.span;
@@ -315,7 +312,7 @@ impl<'a> Resolver<'a> {
                             Ident::new(keywords::SelfLower.name(), new_span)
                         ),
                         kind: ast::UseTreeKind::Simple(
-                            Some(Ident::new(keywords::Underscore.name().gensymed(), new_span)),
+                            Some(Ident::new(Name::gensym("__dummy"), new_span)),
                             ast::DUMMY_NODE_ID,
                             ast::DUMMY_NODE_ID,
                         ),
@@ -466,10 +463,9 @@ impl<'a> Resolver<'a> {
                 if let Some(attr) = attr::find_by_name(&item.attrs, "proc_macro_derive") {
                     if let Some(trait_attr) =
                             attr.meta_item_list().and_then(|list| list.get(0).cloned()) {
-                        if let Some(ident) = trait_attr.name().map(Ident::with_empty_ctxt) {
-                            let sp = trait_attr.span;
+                        if let Some(ident) = trait_attr.ident() {
                             let def = Def::Macro(def.def_id(), MacroKind::ProcMacroStub);
-                            self.define(parent, ident, MacroNS, (def, vis, sp, expansion));
+                            self.define(parent, ident, MacroNS, (def, vis, ident.span, expansion));
                         }
                     }
                 }
@@ -536,9 +532,10 @@ impl<'a> Resolver<'a> {
 
                 // If this is a tuple or unit struct, define a name
                 // in the value namespace as well.
-                if !struct_def.is_struct() {
-                    let ctor_def = Def::StructCtor(self.definitions.local_def_id(struct_def.id()),
-                                                   CtorKind::from_ast(struct_def));
+                if let Some(ctor_node_id) = struct_def.ctor_id() {
+                    let ctor_def = Def::Ctor(self.definitions.local_def_id(ctor_node_id),
+                                             CtorOf::Struct,
+                                             CtorKind::from_ast(struct_def));
                     self.define(parent, ident, ValueNS, (ctor_def, ctor_vis, sp, expansion));
                     self.struct_constructors.insert(def.def_id(), (ctor_def, ctor_vis));
                 }
@@ -585,18 +582,21 @@ impl<'a> Resolver<'a> {
                                        vis: ty::Visibility,
                                        expansion: Mark) {
         let ident = variant.node.ident;
-        let def_id = self.definitions.local_def_id(variant.node.data.id());
 
         // Define a name in the type namespace.
+        let def_id = self.definitions.local_def_id(variant.node.id);
         let def = Def::Variant(def_id);
         self.define(parent, ident, TypeNS, (def, vis, variant.span, expansion));
 
         // Define a constructor name in the value namespace.
         // Braced variants, unlike structs, generate unusable names in
         // value namespace, they are reserved for possible future use.
+        // It's ok to use the variant's id as a ctor id since an
+        // error will be reported on any use of such resolution anyway.
+        let ctor_node_id = variant.node.data.ctor_id().unwrap_or(variant.node.id);
+        let ctor_def_id = self.definitions.local_def_id(ctor_node_id);
         let ctor_kind = CtorKind::from_ast(&variant.node.data);
-        let ctor_def = Def::VariantCtor(def_id, ctor_kind);
-
+        let ctor_def = Def::Ctor(ctor_def_id, CtorOf::Variant, ctor_kind);
         self.define(parent, ident, ValueNS, (ctor_def, vis, variant.span, expansion));
     }
 
@@ -639,10 +639,9 @@ impl<'a> Resolver<'a> {
         // but metadata cannot encode gensyms currently, so we create it here.
         // This is only a guess, two equivalent idents may incorrectly get different gensyms here.
         let ident = ident.gensym_if_underscore();
-        let def_id = def.def_id();
         let expansion = Mark::root(); // FIXME(jseyfried) intercrate hygiene
         match def {
-            Def::Mod(..) | Def::Enum(..) => {
+            Def::Mod(def_id) | Def::Enum(def_id) => {
                 let module = self.new_module(parent,
                                              ModuleKind::Def(def, ident.name),
                                              def_id,
@@ -650,13 +649,15 @@ impl<'a> Resolver<'a> {
                                              span);
                 self.define(parent, ident, TypeNS, (module, vis, DUMMY_SP, expansion));
             }
-            Def::Variant(..) | Def::TyAlias(..) | Def::ForeignTy(..) => {
+            Def::Variant(..) | Def::TyAlias(..) | Def::ForeignTy(..) | Def::Existential(..) |
+            Def::TraitAlias(..) | Def::PrimTy(..) | Def::ToolMod => {
                 self.define(parent, ident, TypeNS, (def, vis, DUMMY_SP, expansion));
             }
-            Def::Fn(..) | Def::Static(..) | Def::Const(..) | Def::VariantCtor(..) => {
+            Def::Fn(..) | Def::Static(..) | Def::Const(..) |
+            Def::Ctor(_, CtorOf::Variant, ..) => {
                 self.define(parent, ident, ValueNS, (def, vis, DUMMY_SP, expansion));
             }
-            Def::StructCtor(..) => {
+            Def::Ctor(def_id, CtorOf::Struct, ..) => {
                 self.define(parent, ident, ValueNS, (def, vis, DUMMY_SP, expansion));
 
                 if let Some(struct_def_id) =
@@ -665,7 +666,7 @@ impl<'a> Resolver<'a> {
                     self.struct_constructors.insert(struct_def_id, (def, vis));
                 }
             }
-            Def::Trait(..) => {
+            Def::Trait(def_id) => {
                 let module_kind = ModuleKind::Def(def, ident.name);
                 let module = self.new_module(parent,
                                              module_kind,
@@ -686,18 +687,14 @@ impl<'a> Resolver<'a> {
                 }
                 module.populated.set(true);
             }
-            Def::Existential(..) |
-            Def::TraitAlias(..) => {
-                self.define(parent, ident, TypeNS, (def, vis, DUMMY_SP, expansion));
-            }
-            Def::Struct(..) | Def::Union(..) => {
+            Def::Struct(def_id) | Def::Union(def_id) => {
                 self.define(parent, ident, TypeNS, (def, vis, DUMMY_SP, expansion));
 
                 // Record field names for error reporting.
                 let field_names = self.cstore.struct_field_names_untracked(def_id);
                 self.insert_field_names(def_id, field_names);
             }
-            Def::Macro(..) => {
+            Def::Macro(..) | Def::NonMacroAttr(..) => {
                 self.define(parent, ident, MacroNS, (def, vis, DUMMY_SP, expansion));
             }
             _ => bug!("unexpected definition: {:?}", def)
@@ -815,14 +812,14 @@ impl<'a> Resolver<'a> {
                             break;
                         }
                         MetaItemKind::List(nested_metas) => for nested_meta in nested_metas {
-                            match nested_meta.word() {
-                                Some(word) => single_imports.push((word.name(), word.span)),
-                                None => ill_formed(nested_meta.span),
+                            match nested_meta.ident() {
+                                Some(ident) if nested_meta.is_word() => single_imports.push(ident),
+                                _ => ill_formed(nested_meta.span()),
                             }
                         }
                         MetaItemKind::NameValue(..) => ill_formed(meta.span),
                     }
-                    None => ill_formed(attr.span()),
+                    None => ill_formed(attr.span),
                 }
             }
         }
@@ -853,23 +850,23 @@ impl<'a> Resolver<'a> {
                 self.legacy_import_macro(ident.name, imported_binding, span, allow_shadowing);
             });
         } else {
-            for (name, span) in single_imports.iter().cloned() {
-                let ident = Ident::with_empty_ctxt(name);
+            for ident in single_imports.iter().cloned() {
                 let result = self.resolve_ident_in_module(
                     ModuleOrUniformRoot::Module(module),
                     ident,
                     MacroNS,
                     None,
                     false,
-                    span,
+                    ident.span,
                 );
                 if let Ok(binding) = result {
-                    let directive = macro_use_directive(span);
+                    let directive = macro_use_directive(ident.span);
                     self.potentially_unused_imports.push(directive);
                     let imported_binding = self.import(binding, directive);
-                    self.legacy_import_macro(name, imported_binding, span, allow_shadowing);
+                    self.legacy_import_macro(ident.name, imported_binding,
+                                             ident.span, allow_shadowing);
                 } else {
-                    span_err!(self.session, span, E0469, "imported macro not found");
+                    span_err!(self.session, ident.span, E0469, "imported macro not found");
                 }
             }
         }

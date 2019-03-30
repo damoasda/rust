@@ -7,13 +7,13 @@ use self::def_ctor::{get_def_from_def_id, get_def_from_hir_id};
 
 use super::*;
 
-pub struct AutoTraitFinder<'a, 'tcx: 'a, 'rcx: 'a> {
-    pub cx: &'a core::DocContext<'a, 'tcx, 'rcx>,
+pub struct AutoTraitFinder<'a, 'tcx> {
+    pub cx: &'a core::DocContext<'tcx>,
     pub f: auto::AutoTraitFinder<'a, 'tcx>,
 }
 
-impl<'a, 'tcx, 'rcx> AutoTraitFinder<'a, 'tcx, 'rcx> {
-    pub fn new(cx: &'a core::DocContext<'a, 'tcx, 'rcx>) -> Self {
+impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
+    pub fn new(cx: &'a core::DocContext<'tcx>) -> Self {
         let f = auto::AutoTraitFinder::new(&cx.tcx);
 
         AutoTraitFinder { cx, f }
@@ -435,7 +435,7 @@ impl<'a, 'tcx, 'rcx> AutoTraitFinder<'a, 'tcx, 'rcx> {
                     let new_ty = match &poly_trait.trait_ {
                         &Type::ResolvedPath {
                             ref path,
-                            ref typarams,
+                            ref param_names,
                             ref did,
                             ref is_generic,
                         } => {
@@ -444,7 +444,13 @@ impl<'a, 'tcx, 'rcx> AutoTraitFinder<'a, 'tcx, 'rcx> {
                                                                 .expect("segments were empty");
 
                             let (old_input, old_output) = match last_segment.args {
-                                GenericArgs::AngleBracketed { types, .. } => (types, None),
+                                GenericArgs::AngleBracketed { args, .. } => {
+                                    let types = args.iter().filter_map(|arg| match arg {
+                                        GenericArg::Type(ty) => Some(ty.clone()),
+                                        _ => None,
+                                    }).collect();
+                                    (types, None)
+                                }
                                 GenericArgs::Parenthesized { inputs, output, .. } => {
                                     (inputs, output)
                                 }
@@ -469,7 +475,7 @@ impl<'a, 'tcx, 'rcx> AutoTraitFinder<'a, 'tcx, 'rcx> {
 
                             Type::ResolvedPath {
                                 path: new_path,
-                                typarams: typarams.clone(),
+                                param_names: param_names.clone(),
                                 did: did.clone(),
                                 is_generic: *is_generic,
                             }
@@ -669,7 +675,7 @@ impl<'a, 'tcx, 'rcx> AutoTraitFinder<'a, 'tcx, 'rcx> {
                             match **trait_ {
                                 Type::ResolvedPath {
                                     path: ref trait_path,
-                                    ref typarams,
+                                    ref param_names,
                                     ref did,
                                     ref is_generic,
                                 } => {
@@ -724,7 +730,7 @@ impl<'a, 'tcx, 'rcx> AutoTraitFinder<'a, 'tcx, 'rcx> {
                                         PolyTrait {
                                             trait_: Type::ResolvedPath {
                                                 path: new_trait_path,
-                                                typarams: typarams.clone(),
+                                                param_names: param_names.clone(),
                                                 did: did.clone(),
                                                 is_generic: *is_generic,
                                             },

@@ -28,7 +28,7 @@ use rustc::infer::canonical::QueryRegionConstraint;
 use rustc::infer::outlives::env::RegionBoundPairs;
 use rustc::infer::{InferCtxt, InferOk, LateBoundRegionConversionTime, NLLRegionVariableOrigin};
 use rustc::infer::type_variable::TypeVariableOrigin;
-use rustc::mir::interpret::EvalErrorKind::BoundsCheck;
+use rustc::mir::interpret::{EvalErrorKind::BoundsCheck, ConstValue};
 use rustc::mir::tcx::PlaceTy;
 use rustc::mir::visit::{PlaceContext, Visitor, MutatingUseContext, NonMutatingUseContext};
 use rustc::mir::*;
@@ -296,37 +296,33 @@ impl<'a, 'b, 'gcx, 'tcx> Visitor<'tcx> for TypeVerifier<'a, 'b, 'gcx, 'tcx> {
                 );
             }
         } else {
-            match *constant.literal {
-                ty::LazyConst::Unevaluated(def_id, substs) => {
-                    if let Err(terr) = self.cx.fully_perform_op(
-                        location.to_locations(),
-                        ConstraintCategory::Boring,
-                        self.cx.param_env.and(type_op::ascribe_user_type::AscribeUserType::new(
-                            constant.ty, def_id, UserSubsts { substs, user_self_ty: None },
-                        )),
-                    ) {
-                        span_mirbug!(
-                            self,
-                            constant,
-                            "bad constant type {:?} ({:?})",
-                            constant,
-                            terr
-                        );
-                    }
+            if let ConstValue::Unevaluated(def_id, substs) = constant.literal.val {
+                if let Err(terr) = self.cx.fully_perform_op(
+                    location.to_locations(),
+                    ConstraintCategory::Boring,
+                    self.cx.param_env.and(type_op::ascribe_user_type::AscribeUserType::new(
+                        constant.ty, def_id, UserSubsts { substs, user_self_ty: None },
+                    )),
+                ) {
+                    span_mirbug!(
+                        self,
+                        constant,
+                        "bad constant type {:?} ({:?})",
+                        constant,
+                        terr
+                    );
                 }
-                ty::LazyConst::Evaluated(lit) => {
-                    if let ty::FnDef(def_id, substs) = lit.ty.sty {
-                        let tcx = self.tcx();
+            }
+            if let ty::FnDef(def_id, substs) = constant.literal.ty.sty {
+                let tcx = self.tcx();
 
-                        let instantiated_predicates = tcx
-                            .predicates_of(def_id)
-                            .instantiate(tcx, substs);
-                        self.cx.normalize_and_prove_instantiated_predicates(
-                            instantiated_predicates,
-                            location.to_locations(),
-                        );
-                    }
-                }
+                let instantiated_predicates = tcx
+                    .predicates_of(def_id)
+                    .instantiate(tcx, substs);
+                self.cx.normalize_and_prove_instantiated_predicates(
+                    instantiated_predicates,
+                    location.to_locations(),
+                );
             }
         }
     }
@@ -418,10 +414,11 @@ impl<'a, 'b, 'gcx, 'tcx> TypeVerifier<'a, 'b, 'gcx, 'tcx> {
             constant, location
         );
 
-        let literal = match constant.literal {
-            ty::LazyConst::Evaluated(lit) => lit,
-            ty::LazyConst::Unevaluated(..) => return,
-        };
+        let literal = constant.literal;
+
+        if let ConstValue::Unevaluated(..) = literal.val {
+            return;
+        }
 
         debug!("sanitize_constant: expected_ty={:?}", literal.ty);
 
@@ -452,53 +449,49 @@ impl<'a, 'b, 'gcx, 'tcx> TypeVerifier<'a, 'b, 'gcx, 'tcx> {
         context: PlaceContext<'_>,
     ) -> PlaceTy<'tcx> {
         debug!("sanitize_place: {:?}", place);
-        let place_ty = match *place {
+        let place_ty = match place {
             Place::Base(PlaceBase::Local(index)) => PlaceTy::Ty {
-                ty: self.mir.local_decls[index].ty,
+                ty: self.mir.local_decls[*index].ty,
             },
-            Place::Base(PlaceBase::Promoted(box (index, sty))) => {
+            Place::Base(PlaceBase::Static(box Static { kind, ty: sty })) => {
                 let sty = self.sanitize_type(place, sty);
-
-                if !self.errors_reported {
-                    let promoted_mir = &self.mir.promoted[index];
-                    self.sanitize_promoted(promoted_mir, location);
-
-                    let promoted_ty = promoted_mir.return_ty();
-
-                    if let Err(terr) = self.cx.eq_types(
-                        sty,
-                        promoted_ty,
-                        location.to_locations(),
-                        ConstraintCategory::Boring,
-                    ) {
-                        span_mirbug!(
-                            self,
+                let check_err =
+                    |verifier: &mut TypeVerifier<'a, 'b, 'gcx, 'tcx>,
+                     place: &Place<'tcx>,
+                     ty,
+                     sty| {
+                        if let Err(terr) = verifier.cx.eq_types(
+                            sty,
+                            ty,
+                            location.to_locations(),
+                            ConstraintCategory::Boring,
+                        ) {
+                            span_mirbug!(
+                            verifier,
                             place,
                             "bad promoted type ({:?}: {:?}): {:?}",
-                            promoted_ty,
+                            ty,
                             sty,
                             terr
                         );
+                        };
                     };
-                }
-                PlaceTy::Ty { ty: sty }
-            }
-            Place::Base(PlaceBase::Static(box Static { def_id, ty: sty })) => {
-                let sty = self.sanitize_type(place, sty);
-                let ty = self.tcx().type_of(def_id);
-                let ty = self.cx.normalize(ty, location);
-                if let Err(terr) =
-                    self.cx
-                        .eq_types(ty, sty, location.to_locations(), ConstraintCategory::Boring)
-                {
-                    span_mirbug!(
-                        self,
-                        place,
-                        "bad static type ({:?}: {:?}): {:?}",
-                        ty,
-                        sty,
-                        terr
-                    );
+                match kind {
+                    StaticKind::Promoted(promoted) => {
+                        if !self.errors_reported {
+                            let promoted_mir = &self.mir.promoted[*promoted];
+                            self.sanitize_promoted(promoted_mir, location);
+
+                            let promoted_ty = promoted_mir.return_ty();
+                            check_err(self, place, promoted_ty, sty);
+                        }
+                    }
+                    StaticKind::Static(def_id) => {
+                        let ty = self.tcx().type_of(*def_id);
+                        let ty = self.cx.normalize(ty, location);
+
+                        check_err(self, place, ty, sty);
+                    }
                 }
                 PlaceTy::Ty { ty: sty }
             }
@@ -2688,8 +2681,8 @@ impl MirPass for TypeckMir {
             return;
         }
 
-        if tcx.is_struct_constructor(def_id) {
-            // We just assume that the automatically generated struct constructors are
+        if tcx.is_constructor(def_id) {
+            // We just assume that the automatically generated struct/variant constructors are
             // correct. See the comment in the `mir_borrowck` implementation for an
             // explanation why we need this.
             return;

@@ -4,7 +4,7 @@
 
 use rustc::hir::def::Def;
 use rustc::mir::{Constant, Location, Place, PlaceBase, Mir, Operand, Rvalue, Local};
-use rustc::mir::{NullOp, UnOp, StatementKind, Statement, BasicBlock, LocalKind};
+use rustc::mir::{NullOp, UnOp, StatementKind, Statement, BasicBlock, LocalKind, Static, StaticKind};
 use rustc::mir::{TerminatorKind, ClearCrossCrate, SourceInfo, BinOp, ProjectionElem};
 use rustc::mir::visit::{Visitor, PlaceContext, MutatingUseContext, NonMutatingUseContext};
 use rustc::mir::interpret::{EvalErrorKind, Scalar, GlobalId, EvalResult};
@@ -18,7 +18,7 @@ use rustc::ty::layout::{
     HasTyCtxt, TargetDataLayout, HasDataLayout,
 };
 
-use crate::interpret::{EvalContext, ScalarMaybeUndef, Immediate, OpTy, ImmTy, MemoryKind};
+use crate::interpret::{InterpretCx, ScalarMaybeUndef, Immediate, OpTy, ImmTy, MemoryKind};
 use crate::const_eval::{
     CompileTimeInterpreter, error_to_const_error, eval_promoted, mk_eval_cx,
 };
@@ -70,7 +70,7 @@ type Const<'tcx> = (OpTy<'tcx>, Span);
 
 /// Finds optimization opportunities on the MIR.
 struct ConstPropagator<'a, 'mir, 'tcx:'a+'mir> {
-    ecx: EvalContext<'a, 'mir, 'tcx, CompileTimeInterpreter<'a, 'mir, 'tcx>>,
+    ecx: InterpretCx<'a, 'mir, 'tcx, CompileTimeInterpreter<'a, 'mir, 'tcx>>,
     mir: &'mir Mir<'tcx>,
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     source: MirSource<'tcx>,
@@ -237,6 +237,7 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
                             self.ecx.tcx,
                             "this expression will panic at runtime",
                             lint_root,
+                            None,
                         );
                     }
                 }
@@ -253,7 +254,7 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
         source_info: SourceInfo,
     ) -> Option<Const<'tcx>> {
         self.ecx.tcx.span = source_info.span;
-        match self.ecx.eval_lazy_const_to_op(*c.literal, None) {
+        match self.ecx.eval_const_to_op(*c.literal, None) {
             Ok(op) => {
                 Some((op, c.span))
             },
@@ -282,7 +283,9 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
                 // an `Index` projection would throw us off-track.
                 _ => None,
             },
-            Place::Base(PlaceBase::Promoted(ref promoted)) => {
+            Place::Base(
+                PlaceBase::Static(box Static {kind: StaticKind::Promoted(promoted), ..})
+            ) => {
                 let generics = self.tcx.generics_of(self.source.def_id());
                 if generics.requires_monomorphization(self.tcx) {
                     // FIXME: can't handle code with generics
@@ -292,7 +295,7 @@ impl<'a, 'mir, 'tcx> ConstPropagator<'a, 'mir, 'tcx> {
                 let instance = Instance::new(self.source.def_id(), substs);
                 let cid = GlobalId {
                     instance,
-                    promoted: Some(promoted.0),
+                    promoted: Some(promoted),
                 };
                 // cannot use `const_eval` here, because that would require having the MIR
                 // for the current function available, but we're producing said MIR right now

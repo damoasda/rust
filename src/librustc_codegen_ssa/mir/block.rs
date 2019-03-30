@@ -1,7 +1,7 @@
 use rustc::middle::lang_items;
 use rustc::ty::{self, Ty, TypeFoldable};
 use rustc::ty::layout::{self, LayoutOf, HasTyCtxt};
-use rustc::mir;
+use rustc::mir::{self, Place, PlaceBase, Static, StaticKind};
 use rustc::mir::interpret::EvalErrorKind;
 use rustc_target::abi::call::{ArgType, FnType, PassMode, IgnoreMode};
 use rustc_target::spec::abi::Abi;
@@ -214,17 +214,13 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             }
         } else {
             let (otherwise, targets) = targets.split_last().unwrap();
-            let switch = bx.switch(discr.immediate(),
-                                   helper.llblock(self, *otherwise),
-                                   values.len());
-            let switch_llty = bx.immediate_backend_type(
-                bx.layout_of(switch_ty)
+            bx.switch(
+                discr.immediate(),
+                helper.llblock(self, *otherwise),
+                values.iter().zip(targets).map(|(&value, target)| {
+                    (value, helper.llblock(self, *target))
+                })
             );
-            for (&value, target) in values.iter().zip(targets) {
-                let llval = bx.const_uint_big(switch_llty, value);
-                let llbb = helper.llblock(self, *target);
-                bx.add_case(switch, llval, llbb)
-            }
         }
     }
 
@@ -233,8 +229,13 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         mut bx: Bx,
     ) {
         if self.fn_ty.c_variadic {
-            if let Some(va_list) = self.va_list_ref {
-                bx.va_end(va_list.llval);
+            match self.va_list_ref {
+                Some(va_list) => {
+                    bx.va_end(va_list.llval);
+                }
+                None => {
+                    bug!("C-variadic function must have a `va_list_ref`");
+                }
             }
         }
         let llval = match self.fn_ty.ret.mode {
@@ -394,12 +395,8 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         // Get the location information.
         let loc = bx.sess().source_map().lookup_char_pos(span.lo());
         let filename = Symbol::intern(&loc.file.name.to_string()).as_str();
-        let filename = bx.const_str_slice(filename);
         let line = bx.const_u32(loc.line as u32);
         let col = bx.const_u32(loc.col.to_usize() as u32 + 1);
-        let align = self.cx.tcx().data_layout.aggregate_align.abi
-            .max(self.cx.tcx().data_layout.i32_align.abi)
-            .max(self.cx.tcx().data_layout.pointer_align.abi);
 
         // Put together the arguments to the panic entry point.
         let (lang_item, args) = match *msg {
@@ -407,30 +404,28 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 let len = self.codegen_operand(&mut bx, len).immediate();
                 let index = self.codegen_operand(&mut bx, index).immediate();
 
-                let file_line_col = bx.const_struct(&[filename, line, col], false);
-                let file_line_col = bx.static_addr_of(
-                    file_line_col,
-                    align,
-                    Some("panic_bounds_check_loc")
+                let file_line_col = bx.static_panic_msg(
+                    None,
+                    filename,
+                    line,
+                    col,
+                    "panic_bounds_check_loc",
                 );
                 (lang_items::PanicBoundsCheckFnLangItem,
-                 vec![file_line_col, index, len])
+                    vec![file_line_col, index, len])
             }
             _ => {
                 let str = msg.description();
                 let msg_str = Symbol::intern(str).as_str();
-                let msg_str = bx.const_str_slice(msg_str);
-                let msg_file_line_col = bx.const_struct(
-                    &[msg_str, filename, line, col],
-                    false
-                );
-                let msg_file_line_col = bx.static_addr_of(
-                    msg_file_line_col,
-                    align,
-                    Some("panic_loc")
+                let msg_file_line_col = bx.static_panic_msg(
+                    Some(msg_str),
+                    filename,
+                    line,
+                    col,
+                    "panic_loc",
                 );
                 (lang_items::PanicFnLangItem,
-                 vec![msg_file_line_col])
+                    vec![msg_file_line_col])
             }
         };
 
@@ -534,27 +529,20 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             if layout.abi.is_uninhabited() {
                 let loc = bx.sess().source_map().lookup_char_pos(span.lo());
                 let filename = Symbol::intern(&loc.file.name.to_string()).as_str();
-                let filename = bx.const_str_slice(filename);
                 let line = bx.const_u32(loc.line as u32);
                 let col = bx.const_u32(loc.col.to_usize() as u32 + 1);
-                let align = self.cx.tcx().data_layout.aggregate_align.abi
-                    .max(self.cx.tcx().data_layout.i32_align.abi)
-                    .max(self.cx.tcx().data_layout.pointer_align.abi);
 
                 let str = format!(
                     "Attempted to instantiate uninhabited type {}",
                     ty
                 );
                 let msg_str = Symbol::intern(&str).as_str();
-                let msg_str = bx.const_str_slice(msg_str);
-                let msg_file_line_col = bx.const_struct(
-                    &[msg_str, filename, line, col],
-                    false,
-                );
-                let msg_file_line_col = bx.static_addr_of(
-                    msg_file_line_col,
-                    align,
-                    Some("panic_loc"),
+                let msg_file_line_col = bx.static_panic_msg(
+                    Some(msg_str),
+                    filename,
+                    line,
+                    col,
+                    "panic_loc",
                 );
 
                 // Obtain the panic entry point.
@@ -616,15 +604,23 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         // but specified directly in the code. This means it gets promoted
                         // and we can then extract the value by evaluating the promoted.
                         mir::Operand::Copy(
-                            mir::Place::Base(mir::PlaceBase::Promoted(box(index, ty)))
+                            Place::Base(
+                                PlaceBase::Static(
+                                    box Static { kind: StaticKind::Promoted(promoted), ty }
+                                )
+                            )
                         ) |
                         mir::Operand::Move(
-                            mir::Place::Base(mir::PlaceBase::Promoted(box(index, ty)))
+                            Place::Base(
+                                PlaceBase::Static(
+                                    box Static { kind: StaticKind::Promoted(promoted), ty }
+                                )
+                            )
                         ) => {
                             let param_env = ty::ParamEnv::reveal_all();
                             let cid = mir::interpret::GlobalId {
                                 instance: self.instance,
-                                promoted: Some(index),
+                                promoted: Some(promoted),
                             };
                             let c = bx.tcx().const_eval(param_env.and(cid));
                             let (llval, ty) = self.simd_shuffle_indices(
@@ -644,7 +640,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                             span_bug!(span, "shuffle indices must be constant");
                         }
                         mir::Operand::Constant(ref constant) => {
-                            let c = self.eval_mir_constant(&bx, constant);
+                            let c = self.eval_mir_constant(constant);
                             let (llval, ty) = self.simd_shuffle_indices(
                                 &bx,
                                 constant.span,

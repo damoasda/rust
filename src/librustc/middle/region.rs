@@ -13,10 +13,11 @@ use crate::ty;
 use std::mem;
 use std::fmt;
 use rustc_data_structures::sync::Lrc;
+use rustc_macros::HashStable;
 use syntax::source_map;
 use syntax::ast;
 use syntax_pos::{Span, DUMMY_SP};
-use crate::ty::TyCtxt;
+use crate::ty::{DefIdTree, TyCtxt};
 use crate::ty::query::Providers;
 
 use crate::hir;
@@ -90,7 +91,8 @@ use rustc_data_structures::stable_hasher::{HashStable, StableHasher,
 // placate the same deriving in `ty::FreeRegion`, but we may want to
 // actually attach a more meaningful ordering to scopes than the one
 // generated via deriving here.
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Copy, RustcEncodable, RustcDecodable)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Copy,
+         RustcEncodable, RustcDecodable, HashStable)]
 pub struct Scope {
     pub id: hir::ItemLocalId,
     pub data: ScopeData,
@@ -113,7 +115,8 @@ impl fmt::Debug for Scope {
     }
 }
 
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Debug, Copy, RustcEncodable, RustcDecodable)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, Debug, Copy,
+         RustcEncodable, RustcDecodable, HashStable)]
 pub enum ScopeData {
     Node,
 
@@ -132,25 +135,24 @@ pub enum ScopeData {
     Remainder(FirstStatementIndex)
 }
 
-/// Represents a subscope of `block` for a binding that is introduced
-/// by `block.stmts[first_statement_index]`. Such subscopes represent
-/// a suffix of the block. Note that each subscope does not include
-/// the initializer expression, if any, for the statement indexed by
-/// `first_statement_index`.
-///
-/// For example, given `{ let (a, b) = EXPR_1; let c = EXPR_2; ... }`:
-///
-/// * The subscope with `first_statement_index == 0` is scope of both
-///   `a` and `b`; it does not include EXPR_1, but does include
-///   everything after that first `let`. (If you want a scope that
-///   includes EXPR_1 as well, then do not use `Scope::Remainder`,
-///   but instead another `Scope` that encompasses the whole block,
-///   e.g., `Scope::Node`.
-///
-/// * The subscope with `first_statement_index == 1` is scope of `c`,
-///   and thus does not include EXPR_2, but covers the `...`.
-
 newtype_index! {
+    /// Represents a subscope of `block` for a binding that is introduced
+    /// by `block.stmts[first_statement_index]`. Such subscopes represent
+    /// a suffix of the block. Note that each subscope does not include
+    /// the initializer expression, if any, for the statement indexed by
+    /// `first_statement_index`.
+    ///
+    /// For example, given `{ let (a, b) = EXPR_1; let c = EXPR_2; ... }`:
+    ///
+    /// * The subscope with `first_statement_index == 0` is scope of both
+    ///   `a` and `b`; it does not include EXPR_1, but does include
+    ///   everything after that first `let`. (If you want a scope that
+    ///   includes EXPR_1 as well, then do not use `Scope::Remainder`,
+    ///   but instead another `Scope` that encompasses the whole block,
+    ///   e.g., `Scope::Node`.
+    ///
+    /// * The subscope with `first_statement_index == 1` is scope of `c`,
+    ///   and thus does not include EXPR_2, but covers the `...`.
     pub struct FirstStatementIndex { .. }
 }
 
@@ -648,7 +650,7 @@ impl<'tcx> ScopeTree {
     pub fn early_free_scope<'a, 'gcx>(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>,
                                       br: &ty::EarlyBoundRegion)
                                       -> Scope {
-        let param_owner = tcx.parent_def_id(br.def_id).unwrap();
+        let param_owner = tcx.parent(br.def_id).unwrap();
 
         let param_owner_id = tcx.hir().as_local_hir_id(param_owner).unwrap();
         let scope = tcx.hir().maybe_body_owned_by_by_hir_id(param_owner_id).map(|body_id| {
@@ -677,7 +679,7 @@ impl<'tcx> ScopeTree {
                                  -> Scope {
         let param_owner = match fr.bound_region {
             ty::BoundRegion::BrNamed(def_id, _) => {
-                tcx.parent_def_id(def_id).unwrap()
+                tcx.parent(def_id).unwrap()
             }
             _ => fr.scope
         };

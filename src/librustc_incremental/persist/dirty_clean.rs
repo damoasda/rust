@@ -36,16 +36,16 @@ const CFG: &str = "cfg";
 
 /// For typedef, constants, and statics
 const BASE_CONST: &[&str] = &[
-    label_strs::TypeOfItem,
+    label_strs::type_of,
 ];
 
 /// DepNodes for functions + methods
 const BASE_FN: &[&str] = &[
     // Callers will depend on the signature of these items, so we better test
     label_strs::FnSignature,
-    label_strs::GenericsOfItem,
-    label_strs::PredicatesOfItem,
-    label_strs::TypeOfItem,
+    label_strs::generics_of,
+    label_strs::predicates_of,
+    label_strs::type_of,
 
     // And a big part of compilation (that we eventually want to cache) is type inference
     // information:
@@ -62,15 +62,15 @@ const BASE_HIR: &[&str] = &[
 /// `impl` implementation of struct/trait
 const BASE_IMPL: &[&str] = &[
     label_strs::AssociatedItemDefIds,
-    label_strs::GenericsOfItem,
+    label_strs::generics_of,
     label_strs::ImplTraitRef,
 ];
 
-/// DepNodes for MirBuilt/Optimized, which is relevant in "executable"
+/// DepNodes for mir_built/Optimized, which is relevant in "executable"
 /// code, i.e., functions+methods
 const BASE_MIR: &[&str] = &[
-    label_strs::MirOptimized,
-    label_strs::MirBuilt,
+    label_strs::optimized_mir,
+    label_strs::mir_built,
 ];
 
 /// Struct, Enum and Union DepNodes
@@ -78,17 +78,17 @@ const BASE_MIR: &[&str] = &[
 /// Note that changing the type of a field does not change the type of the struct or enum, but
 /// adding/removing fields or changing a fields name or visibility does.
 const BASE_STRUCT: &[&str] = &[
-    label_strs::GenericsOfItem,
-    label_strs::PredicatesOfItem,
-    label_strs::TypeOfItem,
+    label_strs::generics_of,
+    label_strs::predicates_of,
+    label_strs::type_of,
 ];
 
 /// Trait definition `DepNode`s.
 const BASE_TRAIT_DEF: &[&str] = &[
     label_strs::AssociatedItemDefIds,
-    label_strs::GenericsOfItem,
+    label_strs::generics_of,
     label_strs::ObjectSafety,
-    label_strs::PredicatesOfItem,
+    label_strs::predicates_of,
     label_strs::SpecializationGraph,
     label_strs::TraitDefOfItem,
     label_strs::TraitImpls,
@@ -179,7 +179,7 @@ const LABELS_TRAIT: &[&[&str]] = &[
 // Fields are kind of separate from their containers, as they can change independently from
 // them. We should at least check
 //
-//     TypeOfItem for these.
+//     type_of for these.
 
 type Labels = FxHashSet<String>;
 
@@ -430,13 +430,13 @@ impl<'a, 'tcx> DirtyCleanVisitor<'a, 'tcx> {
             if DepNode::has_label_string(label) {
                 if out.contains(label) {
                     self.tcx.sess.span_fatal(
-                        item.span,
+                        item.span(),
                         &format!("dep-node label `{}` is repeated", label));
                 }
                 out.insert(label.to_string());
             } else {
                 self.tcx.sess.span_fatal(
-                    item.span,
+                    item.span(),
                     &format!("dep-node label `{}` not recognized", label));
             }
         }
@@ -463,7 +463,7 @@ impl<'a, 'tcx> DirtyCleanVisitor<'a, 'tcx> {
         if let Some(def_id) = dep_node.extract_def_id(self.tcx) {
             format!("{:?}({})",
                     dep_node.kind,
-                    self.tcx.item_path_str(def_id))
+                    self.tcx.def_path_str(def_id))
         } else {
             format!("{:?}({:?})", dep_node.kind, dep_node.hash)
         }
@@ -576,13 +576,13 @@ fn expect_associated_value(tcx: TyCtxt<'_, '_, '_>, item: &NestedMetaItem) -> as
     if let Some(value) = item.value_str() {
         value
     } else {
-        let msg = if let Some(name) = item.name() {
-            format!("associated value expected for `{}`", name)
+        let msg = if let Some(ident) = item.ident() {
+            format!("associated value expected for `{}`", ident)
         } else {
             "expected an associated value".to_string()
         };
 
-        tcx.sess.span_fatal(item.span, &msg);
+        tcx.sess.span_fatal(item.span(), &msg);
     }
 }
 

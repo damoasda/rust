@@ -66,6 +66,7 @@ mod l4re_base;
 mod fuchsia_base;
 mod redox_base;
 mod riscv_base;
+mod wasm32_base;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash,
          RustcEncodable, RustcDecodable)]
@@ -335,6 +336,10 @@ supported_targets! {
     ("mips-unknown-linux-gnu", mips_unknown_linux_gnu),
     ("mips64-unknown-linux-gnuabi64", mips64_unknown_linux_gnuabi64),
     ("mips64el-unknown-linux-gnuabi64", mips64el_unknown_linux_gnuabi64),
+    ("mipsisa32r6-unknown-linux-gnu", mipsisa32r6_unknown_linux_gnu),
+    ("mipsisa32r6el-unknown-linux-gnu", mipsisa32r6el_unknown_linux_gnu),
+    ("mipsisa64r6-unknown-linux-gnuabi64", mipsisa64r6_unknown_linux_gnuabi64),
+    ("mipsisa64r6el-unknown-linux-gnuabi64", mipsisa64r6el_unknown_linux_gnuabi64),
     ("mipsel-unknown-linux-gnu", mipsel_unknown_linux_gnu),
     ("powerpc-unknown-linux-gnu", powerpc_unknown_linux_gnu),
     ("powerpc-unknown-linux-gnuspe", powerpc_unknown_linux_gnuspe),
@@ -376,6 +381,8 @@ supported_targets! {
     ("aarch64-linux-android", aarch64_linux_android),
 
     ("aarch64-unknown-freebsd", aarch64_unknown_freebsd),
+    ("armv6-unknown-freebsd", armv6_unknown_freebsd),
+    ("armv7-unknown-freebsd", armv7_unknown_freebsd),
     ("i686-unknown-freebsd", i686_unknown_freebsd),
     ("powerpc64-unknown-freebsd", powerpc64_unknown_freebsd),
     ("x86_64-unknown-freebsd", x86_64_unknown_freebsd),
@@ -437,6 +444,7 @@ supported_targets! {
     ("asmjs-unknown-emscripten", asmjs_unknown_emscripten),
     ("wasm32-unknown-emscripten", wasm32_unknown_emscripten),
     ("wasm32-unknown-unknown", wasm32_unknown_unknown),
+    ("wasm32-unknown-wasi", wasm32_unknown_wasi),
     ("wasm32-experimental-emscripten", wasm32_experimental_emscripten),
 
     ("thumbv6m-none-eabi", thumbv6m_none_eabi),

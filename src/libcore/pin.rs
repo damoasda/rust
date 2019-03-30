@@ -1,4 +1,4 @@
-//! Types which pin data to its location in memory
+//! Types that pin data to its location in memory.
 //!
 //! It is sometimes useful to have objects that are guaranteed to not move,
 //! in the sense that their placement in memory does not change, and can thus be relied upon.
@@ -109,7 +109,7 @@
 //! assert_eq!(still_unmoved.slice, NonNull::from(&still_unmoved.data));
 //!
 //! // Since our type doesn't implement Unpin, this will fail to compile:
-//! // let new_unmoved = Unmovable::new("world".to_string());
+//! // let mut new_unmoved = Unmovable::new("world".to_string());
 //! // std::mem::swap(&mut *still_unmoved, &mut *new_unmoved);
 //! ```
 //!

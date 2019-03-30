@@ -14,7 +14,6 @@ use rustc::ty::{self, Ty, TyCtxt, TyKind};
 use rustc::ty::subst::{InternalSubsts, SubstsRef};
 use rustc::lint;
 use rustc_errors::{Applicability, DiagnosticBuilder};
-use rustc::util::common::ErrorReported;
 
 use rustc::hir::def::*;
 use rustc::hir::def_id::DefId;
@@ -27,32 +26,20 @@ use std::slice;
 use syntax::ptr::P;
 use syntax_pos::{Span, DUMMY_SP, MultiSpan};
 
-pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
-    for def_id in tcx.body_owners() {
-        tcx.ensure().check_match(def_id);
-    }
-    tcx.sess.abort_if_errors();
-}
-
-pub(crate) fn check_match<'a, 'tcx>(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    def_id: DefId,
-) -> Result<(), ErrorReported> {
+pub(crate) fn check_match<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) {
     let body_id = if let Some(id) = tcx.hir().as_local_hir_id(def_id) {
         tcx.hir().body_owned_by(id)
     } else {
-        return Ok(());
+        return;
     };
 
-    tcx.sess.track_errors(|| {
-        MatchVisitor {
-            tcx,
-            tables: tcx.body_tables(body_id),
-            region_scope_tree: &tcx.region_scope_tree(def_id),
-            param_env: tcx.param_env(def_id),
-            identity_substs: InternalSubsts::identity_for_item(tcx, def_id),
-        }.visit_body(tcx.hir().body(body_id));
-    })
+    MatchVisitor {
+        tcx,
+        tables: tcx.body_tables(body_id),
+        region_scope_tree: &tcx.region_scope_tree(def_id),
+        param_env: tcx.param_env(def_id),
+        identity_substs: InternalSubsts::identity_for_item(tcx, def_id),
+    }.visit_body(tcx.hir().body(body_id));
 }
 
 fn create_e0004<'a>(sess: &'a Session, sp: Span, error_message: String) -> DiagnosticBuilder<'a> {
@@ -326,7 +313,7 @@ fn check_for_bindings_named_same_as_variants(cx: &MatchVisitor<'_, '_>, pat: &Pa
                     if edef.is_enum() && edef.variants.iter().any(|variant| {
                         variant.ident == ident && variant.ctor_kind == CtorKind::Const
                     }) {
-                        let ty_path = cx.tcx.item_path_str(edef.did);
+                        let ty_path = cx.tcx.def_path_str(edef.did);
                         let mut err = struct_span_warn!(cx.tcx.sess, p.span, E0170,
                             "pattern binding `{}` is named the same as one \
                             of the variants of the type `{}`",

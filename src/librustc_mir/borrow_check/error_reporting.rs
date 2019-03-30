@@ -3,21 +3,23 @@ use crate::borrow_check::nll::region_infer::{RegionName, RegionNameSource};
 use crate::borrow_check::prefixes::IsPrefixOf;
 use crate::borrow_check::WriteKind;
 use rustc::hir;
+use rustc::hir::def::Namespace;
 use rustc::hir::def_id::DefId;
 use rustc::middle::region::ScopeTree;
 use rustc::mir::{
     self, AggregateKind, BindingForm, BorrowKind, ClearCrossCrate, Constant,
     ConstraintCategory, Field, Local, LocalDecl, LocalKind, Location, Operand,
     Place, PlaceBase, PlaceProjection, ProjectionElem, Rvalue, Statement, StatementKind,
-    TerminatorKind, VarBindingForm,
+    Static, StaticKind, TerminatorKind, VarBindingForm,
 };
 use rustc::ty::{self, DefIdTree};
-use rustc::util::ppaux::RegionHighlightMode;
+use rustc::ty::print::Print;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::indexed_vec::Idx;
 use rustc_data_structures::sync::Lrc;
 use rustc_errors::{Applicability, DiagnosticBuilder};
 use syntax_pos::Span;
+use syntax::source_map::CompilerDesugaringKind;
 
 use super::borrow_set::BorrowData;
 use super::{Context, MirBorrowckCtxt};
@@ -153,6 +155,18 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
                         span,
                         format!("value moved{} here, in previous iteration of loop", move_msg),
                     );
+                    if Some(CompilerDesugaringKind::ForLoop) == span.compiler_desugaring_kind() {
+                        if let Ok(snippet) = self.infcx.tcx.sess.source_map()
+                            .span_to_snippet(span)
+                        {
+                            err.span_suggestion(
+                                move_span,
+                                "consider borrowing this to avoid moving it into the for loop",
+                                format!("&{}", snippet),
+                                Applicability::MaybeIncorrect,
+                            );
+                        }
+                    }
                     is_loop_move = true;
                 } else if move_site.traversed_back_edge {
                     err.span_label(
@@ -290,8 +304,11 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
             format!("move occurs due to use{}", move_spans.describe())
         );
 
-        self.explain_why_borrow_contains_point(context, borrow, None)
-            .add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, "");
+        self.explain_why_borrow_contains_point(
+            context,
+            borrow,
+            None,
+        ).add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, "", Some(borrow_span));
         err.buffer(&mut self.errors_buffer);
     }
 
@@ -328,7 +345,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
         });
 
         self.explain_why_borrow_contains_point(context, borrow, None)
-            .add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, "");
+            .add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, "", None);
         err.buffer(&mut self.errors_buffer);
     }
 
@@ -541,8 +558,13 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
             ));
         }
 
-        explanation
-            .add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, first_borrow_desc);
+        explanation.add_explanation_to_diagnostic(
+            self.infcx.tcx,
+            self.mir,
+            &mut err,
+            first_borrow_desc,
+            None,
+        );
 
         err.buffer(&mut self.errors_buffer);
     }
@@ -831,7 +853,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
         );
 
         if let Some(annotation) = self.annotate_argument_and_return_for_borrow(borrow) {
-            let region_name = annotation.emit(&mut err);
+            let region_name = annotation.emit(self, &mut err);
 
             err.span_label(
                 borrow_span,
@@ -865,7 +887,13 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
 
             if let BorrowExplanation::MustBeValidFor { .. } = explanation {
             } else {
-                explanation.add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, "");
+                explanation.add_explanation_to_diagnostic(
+                    self.infcx.tcx,
+                    self.mir,
+                    &mut err,
+                    "",
+                    None,
+                );
             }
         } else {
             err.span_label(borrow_span, "borrowed value does not live long enough");
@@ -885,7 +913,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
                 format!("value captured here{}", within),
             );
 
-            explanation.add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, "");
+            explanation.add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, "", None);
         }
 
         err
@@ -945,7 +973,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
             _ => {}
         }
 
-        explanation.add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, "");
+        explanation.add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, "", None);
 
         err.buffer(&mut self.errors_buffer);
     }
@@ -1026,7 +1054,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
             }
             _ => {}
         }
-        explanation.add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, "");
+        explanation.add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, "", None);
 
         let within = if borrow_spans.for_generator() {
             " by generator"
@@ -1366,7 +1394,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
         );
 
         self.explain_why_borrow_contains_point(context, loan, None)
-            .add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, "");
+            .add_explanation_to_diagnostic(self.infcx.tcx, self.mir, &mut err, "", None);
 
         err.buffer(&mut self.errors_buffer);
     }
@@ -1504,10 +1532,10 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
         debug!("add_moved_or_invoked_closure_note: terminator={:?}", terminator);
         if let TerminatorKind::Call {
             func: Operand::Constant(box Constant {
-                literal: ty::LazyConst::Evaluated(ty::Const {
+                literal: ty::Const {
                     ty: &ty::TyS { sty: ty::TyKind::FnDef(id, _), ..  },
                     ..
-                }),
+                },
                 ..
             }),
             args,
@@ -1597,14 +1625,14 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
         including_downcast: &IncludingDowncast,
     ) -> Result<(), ()> {
         match *place {
-            Place::Base(PlaceBase::Promoted(_)) => {
-                buf.push_str("promoted");
-            }
             Place::Base(PlaceBase::Local(local)) => {
                 self.append_local_to_string(local, buf)?;
             }
-            Place::Base(PlaceBase::Static(ref static_)) => {
-                buf.push_str(&self.infcx.tcx.item_name(static_.def_id).to_string());
+            Place::Base(PlaceBase::Static(box Static{ kind: StaticKind::Promoted(_), .. })) => {
+                buf.push_str("promoted");
+            }
+            Place::Base(PlaceBase::Static(box Static{ kind: StaticKind::Static(def_id), .. })) => {
+                buf.push_str(&self.infcx.tcx.item_name(def_id).to_string());
             }
             Place::Projection(ref proj) => {
                 match proj.elem {
@@ -1743,8 +1771,6 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
                 let local = &self.mir.local_decls[local];
                 self.describe_field_from_ty(&local.ty, field)
             }
-            Place::Base(PlaceBase::Promoted(ref prom)) =>
-                self.describe_field_from_ty(&prom.1, field),
             Place::Base(PlaceBase::Static(ref static_)) =>
                 self.describe_field_from_ty(&static_.ty, field),
             Place::Projection(ref proj) => match proj.elem {
@@ -1799,7 +1825,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
                     // (https://github.com/rust-lang/rfcs/pull/1546)
                     bug!(
                         "End-user description not implemented for field access on `{:?}`",
-                        ty.sty
+                        ty
                     );
                 }
             }
@@ -1808,8 +1834,10 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
 
     /// Checks if a place is a thread-local static.
     pub fn is_place_thread_local(&self, place: &Place<'tcx>) -> bool {
-        if let Place::Base(PlaceBase::Static(statik)) = place {
-            let attrs = self.infcx.tcx.get_attrs(statik.def_id);
+        if let Place::Base(
+            PlaceBase::Static(box Static{ kind: StaticKind::Static(def_id), .. })
+        ) = place {
+            let attrs = self.infcx.tcx.get_attrs(*def_id);
             let is_thread_local = attrs.iter().any(|attr| attr.check_name("thread_local"));
 
             debug!(
@@ -1827,8 +1855,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
         let tcx = self.infcx.tcx;
         match place {
             Place::Base(PlaceBase::Local(_)) |
-            Place::Base(PlaceBase::Static(_)) |
-            Place::Base(PlaceBase::Promoted(_)) => {
+            Place::Base(PlaceBase::Static(_)) => {
                 StorageDeadOrDrop::LocalStorageDead
             }
             Place::Projection(box PlaceProjection { base, elem }) => {
@@ -1875,7 +1902,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
     fn annotate_argument_and_return_for_borrow(
         &self,
         borrow: &BorrowData<'tcx>,
-    ) -> Option<AnnotatedBorrowFnSignature<'_>> {
+    ) -> Option<AnnotatedBorrowFnSignature<'tcx>> {
         // Define a fallback for when we can't match a closure.
         let fallback = || {
             let is_closure = self.infcx.tcx.is_closure(self.mir_def_id);
@@ -2099,7 +2126,7 @@ impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
         &self,
         did: DefId,
         sig: ty::PolyFnSig<'tcx>,
-    ) -> Option<AnnotatedBorrowFnSignature<'_>> {
+    ) -> Option<AnnotatedBorrowFnSignature<'tcx>> {
         debug!("annotate_fn_sig: did={:?} sig={:?}", did, sig);
         let is_closure = self.infcx.tcx.is_closure(did);
         let fn_hir_id = self.infcx.tcx.hir().as_local_hir_id(did)?;
@@ -2245,7 +2272,11 @@ enum AnnotatedBorrowFnSignature<'tcx> {
 impl<'tcx> AnnotatedBorrowFnSignature<'tcx> {
     /// Annotate the provided diagnostic with information about borrow from the fn signature that
     /// helps explain.
-    fn emit(&self, diag: &mut DiagnosticBuilder<'_>) -> String {
+    fn emit(
+        &self,
+        cx: &mut MirBorrowckCtxt<'_, '_, 'tcx>,
+        diag: &mut DiagnosticBuilder<'_>,
+    ) -> String {
         match self {
             AnnotatedBorrowFnSignature::Closure {
                 argument_ty,
@@ -2253,10 +2284,10 @@ impl<'tcx> AnnotatedBorrowFnSignature<'tcx> {
             } => {
                 diag.span_label(
                     *argument_span,
-                    format!("has type `{}`", self.get_name_for_ty(argument_ty, 0)),
+                    format!("has type `{}`", cx.get_name_for_ty(argument_ty, 0)),
                 );
 
-                self.get_region_name_for_ty(argument_ty, 0)
+                cx.get_region_name_for_ty(argument_ty, 0)
             }
             AnnotatedBorrowFnSignature::AnonymousFunction {
                 argument_ty,
@@ -2264,10 +2295,10 @@ impl<'tcx> AnnotatedBorrowFnSignature<'tcx> {
                 return_ty,
                 return_span,
             } => {
-                let argument_ty_name = self.get_name_for_ty(argument_ty, 0);
+                let argument_ty_name = cx.get_name_for_ty(argument_ty, 0);
                 diag.span_label(*argument_span, format!("has type `{}`", argument_ty_name));
 
-                let return_ty_name = self.get_name_for_ty(return_ty, 0);
+                let return_ty_name = cx.get_name_for_ty(return_ty, 0);
                 let types_equal = return_ty_name == argument_ty_name;
                 diag.span_label(
                     *return_span,
@@ -2286,7 +2317,7 @@ impl<'tcx> AnnotatedBorrowFnSignature<'tcx> {
                      lifetime-syntax.html#lifetime-elision>",
                 );
 
-                self.get_region_name_for_ty(return_ty, 0)
+                cx.get_region_name_for_ty(return_ty, 0)
             }
             AnnotatedBorrowFnSignature::NamedFunction {
                 arguments,
@@ -2294,7 +2325,7 @@ impl<'tcx> AnnotatedBorrowFnSignature<'tcx> {
                 return_span,
             } => {
                 // Region of return type and arguments checked to be the same earlier.
-                let region_name = self.get_region_name_for_ty(return_ty, 0);
+                let region_name = cx.get_region_name_for_ty(return_ty, 0);
                 for (_, argument_span) in arguments {
                     diag.span_label(*argument_span, format!("has lifetime `{}`", region_name));
                 }
@@ -2314,10 +2345,15 @@ impl<'tcx> AnnotatedBorrowFnSignature<'tcx> {
             }
         }
     }
+}
 
+impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
     /// Return the name of the provided `Ty` (that must be a reference) with a synthesized lifetime
     /// name where required.
     fn get_name_for_ty(&self, ty: ty::Ty<'tcx>, counter: usize) -> String {
+        let mut s = String::new();
+        let mut printer = ty::print::FmtPrinter::new(self.infcx.tcx, &mut s, Namespace::TypeNS);
+
         // We need to add synthesized lifetimes where appropriate. We do
         // this by hooking into the pretty printer and telling it to label the
         // lifetimes without names with the value `'0`.
@@ -2327,28 +2363,37 @@ impl<'tcx> AnnotatedBorrowFnSignature<'tcx> {
                 ty::RegionKind::RePlaceholder(ty::PlaceholderRegion { name: br, .. }),
                 _,
                 _,
-            ) => RegionHighlightMode::highlighting_bound_region(*br, counter, || ty.to_string()),
-            _ => ty.to_string(),
+            ) => printer.region_highlight_mode.highlighting_bound_region(*br, counter),
+            _ => {}
         }
+
+        let _ = ty.print(printer);
+        s
     }
 
     /// Returns the name of the provided `Ty` (that must be a reference)'s region with a
     /// synthesized lifetime name where required.
     fn get_region_name_for_ty(&self, ty: ty::Ty<'tcx>, counter: usize) -> String {
-        match ty.sty {
-            ty::TyKind::Ref(region, _, _) => match region {
-                ty::RegionKind::ReLateBound(_, br)
-                | ty::RegionKind::RePlaceholder(ty::PlaceholderRegion { name: br, .. }) => {
-                    RegionHighlightMode::highlighting_bound_region(
-                        *br,
-                        counter,
-                        || region.to_string(),
-                    )
+        let mut s = String::new();
+        let mut printer = ty::print::FmtPrinter::new(self.infcx.tcx, &mut s, Namespace::TypeNS);
+
+        let region = match ty.sty {
+            ty::TyKind::Ref(region, _, _) => {
+                match region {
+                    ty::RegionKind::ReLateBound(_, br)
+                    | ty::RegionKind::RePlaceholder(ty::PlaceholderRegion { name: br, .. }) => {
+                        printer.region_highlight_mode.highlighting_bound_region(*br, counter)
+                    }
+                    _ => {}
                 }
-                _ => region.to_string(),
-            },
+
+                region
+            }
             _ => bug!("ty for annotation of borrow region is not a reference"),
-        }
+        };
+
+        let _ = region.print(printer);
+        s
     }
 }
 

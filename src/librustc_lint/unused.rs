@@ -112,7 +112,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnusedResults {
                 }
             },
             hir::ExprKind::MethodCall(..) => {
-                cx.tables.type_dependent_defs().get(expr.hir_id).cloned()
+                cx.tables.type_dependent_def(expr.hir_id)
             },
             _ => None
         };
@@ -182,7 +182,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnusedResults {
             for attr in cx.tcx.get_attrs(def_id).iter() {
                 if attr.check_name("must_use") {
                     let msg = format!("unused {}`{}`{} that must be used",
-                        descr_pre_path, cx.tcx.item_path_str(def_id), descr_post_path);
+                        descr_pre_path, cx.tcx.def_path_str(def_id), descr_post_path);
                     let mut err = cx.struct_span_lint(UNUSED_MUST_USE, sp, &msg);
                     // check for #[must_use = "..."]
                     if let Some(note) = attr.value_str() {
@@ -267,19 +267,21 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnusedAttributes {
             }
         }
 
-        let name = attr.name();
+        let name = attr.name_or_empty();
         if !attr::is_used(attr) {
             debug!("Emitting warning for: {:?}", attr);
             cx.span_lint(UNUSED_ATTRIBUTES, attr.span, "unused attribute");
             // Is it a builtin attribute that must be used at the crate level?
             let known_crate = BUILTIN_ATTRIBUTES.iter()
-                .find(|&&(builtin, ty, ..)| name == builtin && ty == AttributeType::CrateLevel)
+                .find(|&&(builtin, ty, ..)| {
+                    name == builtin && ty == AttributeType::CrateLevel
+                })
                 .is_some();
 
             // Has a plugin registered this attribute as one that must be used at
             // the crate level?
             let plugin_crate = plugin_attributes.iter()
-                .find(|&&(ref x, t)| name == &**x && AttributeType::CrateLevel == t)
+                .find(|&&(ref x, t)| name == x.as_str() && AttributeType::CrateLevel == t)
                 .is_some();
             if known_crate || plugin_crate {
                 let msg = match attr.style {

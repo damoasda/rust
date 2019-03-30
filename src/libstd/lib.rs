@@ -221,7 +221,7 @@
 
 #![cfg_attr(test, feature(print_internals, set_stdio, test, update_panic_count))]
 #![cfg_attr(all(target_vendor = "fortanix", target_env = "sgx"),
-            feature(global_asm, range_contains, slice_index_methods,
+            feature(global_asm, slice_index_methods,
                     decl_macro, coerce_unsized, sgx_platform, ptr_wrapping_offset_from))]
 
 // std is implemented with unstable features, many of which are internal
@@ -245,6 +245,7 @@
 #![feature(cfg_target_thread_local)]
 #![feature(char_error_internals)]
 #![feature(checked_duration_since)]
+#![feature(clamp)]
 #![feature(compiler_builtins_lib)]
 #![feature(concat_idents)]
 #![feature(const_cstr_unchecked)]
@@ -300,6 +301,7 @@
 #![feature(stmt_expr_attributes)]
 #![feature(str_internals)]
 #![feature(thread_local)]
+#![feature(todo_macro)]
 #![feature(toowned_clone_into)]
 #![feature(try_reserve)]
 #![feature(unboxed_closures)]
@@ -322,7 +324,7 @@ use prelude::v1::*;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::{assert_eq, assert_ne, debug_assert, debug_assert_eq, debug_assert_ne};
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use core::{unreachable, unimplemented, write, writeln, r#try};
+pub use core::{unreachable, unimplemented, write, writeln, r#try, todo};
 
 #[allow(unused_imports)] // macros from `alloc` are not used on all platforms
 #[macro_use]

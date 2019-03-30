@@ -31,10 +31,7 @@ pub fn mir_build<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> Mir<'t
 
     // Figure out what primary body this item has.
     let (body_id, return_ty_span) = match tcx.hir().get_by_hir_id(id) {
-        Node::Variant(variant) =>
-            return create_constructor_shim(tcx, id, &variant.node.data),
-        Node::StructCtor(ctor) =>
-            return create_constructor_shim(tcx, id, ctor),
+        Node::Ctor(ctor) => return create_constructor_shim(tcx, id, ctor),
 
         Node::Expr(hir::Expr { node: hir::ExprKind::Closure(_, decl, body_id, _, _), .. })
         | Node::Item(hir::Item { node: hir::ItemKind::Fn(decl, _, _, body_id), .. })
@@ -201,7 +198,7 @@ impl<'a, 'gcx: 'tcx, 'tcx> MutVisitor<'tcx> for GlobalizeMir<'a, 'gcx> {
         }
     }
 
-    fn visit_const(&mut self, constant: &mut &'tcx ty::LazyConst<'tcx>, _: Location) {
+    fn visit_const(&mut self, constant: &mut &'tcx ty::Const<'tcx>, _: Location) {
         if let Some(lifted) = self.tcx.lift(constant) {
             *constant = lifted;
         } else {
@@ -373,7 +370,7 @@ struct Builder<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     /// finish building it.
     guard_context: Vec<GuardFrame>,
 
-    /// Maps `NodeId`s of variable bindings to the `Local`s created for them.
+    /// Maps `HirId`s of variable bindings to the `Local`s created for them.
     /// (A match binding can have two locals; the 2nd is for the arm's guard.)
     var_indices: HirIdMap<LocalsForNode>,
     local_decls: IndexVec<Local, LocalDecl<'tcx>>,
@@ -451,7 +448,7 @@ impl BlockContext {
 
 #[derive(Debug)]
 enum LocalsForNode {
-    /// In the usual case, a `NodeId` for an identifier maps to at most
+    /// In the usual case, a `HirId` for an identifier maps to at most
     /// one `Local` declaration.
     One(Local),
 
@@ -579,6 +576,10 @@ fn should_abort_on_panic<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
     // Not callable from C, so we can safely unwind through these
     if abi == Abi::Rust || abi == Abi::RustCall { return false; }
 
+    // Validate `#[unwind]` syntax regardless of platform-specific panic strategy
+    let attrs = &tcx.get_attrs(fn_def_id);
+    let unwind_attr = attr::find_unwind_attr(Some(tcx.sess.diagnostic()), attrs);
+
     // We never unwind, so it's not relevant to stop an unwind
     if tcx.sess.panic_strategy() != PanicStrategy::Unwind { return false; }
 
@@ -587,8 +588,7 @@ fn should_abort_on_panic<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
 
     // This is a special case: some functions have a C abi but are meant to
     // unwind anyway. Don't stop them.
-    let attrs = &tcx.get_attrs(fn_def_id);
-    match attr::find_unwind_attr(Some(tcx.sess.diagnostic()), attrs) {
+    match unwind_attr {
         None => true,
         Some(UnwindAttr::Allowed) => false,
         Some(UnwindAttr::Aborts) => true,

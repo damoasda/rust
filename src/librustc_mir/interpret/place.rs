@@ -14,7 +14,7 @@ use rustc::ty::TypeFoldable;
 
 use super::{
     GlobalId, AllocId, Allocation, Scalar, EvalResult, Pointer, PointerArithmetic,
-    EvalContext, Machine, AllocMap, AllocationExtra,
+    InterpretCx, Machine, AllocMap, AllocationExtra,
     RawConst, Immediate, ImmTy, ScalarMaybeUndef, Operand, OpTy, MemoryKind
 };
 
@@ -305,7 +305,7 @@ impl<'tcx, Tag: ::std::fmt::Debug> PlaceTy<'tcx, Tag> {
 }
 
 // separating the pointer tag for `impl Trait`, see https://github.com/rust-lang/rust/issues/54385
-impl<'a, 'mir, 'tcx, Tag, M> EvalContext<'a, 'mir, 'tcx, M>
+impl<'a, 'mir, 'tcx, Tag, M> InterpretCx<'a, 'mir, 'tcx, M>
 where
     // FIXME: Working around https://github.com/rust-lang/rust/issues/54385
     Tag: ::std::fmt::Debug+Default+Copy+Eq+Hash+'static,
@@ -354,7 +354,7 @@ where
             ty::Ref(_, _, mutbl) => Some(mutbl),
             ty::Adt(def, _) if def.is_box() => Some(hir::MutMutable),
             ty::RawPtr(_) => None,
-            _ => bug!("Unexpected pointer type {}", val.layout.ty.sty),
+            _ => bug!("Unexpected pointer type {}", val.layout.ty),
         };
         place.mplace.ptr = M::tag_dereference(self, place, mutbl)?;
         Ok(place)
@@ -582,19 +582,20 @@ where
     ) -> EvalResult<'tcx, MPlaceTy<'tcx, M::PointerTag>> {
         use rustc::mir::Place::*;
         use rustc::mir::PlaceBase;
+        use rustc::mir::{Static, StaticKind};
         Ok(match *mir_place {
-            Base(PlaceBase::Promoted(ref promoted)) => {
+            Base(PlaceBase::Static(box Static { kind: StaticKind::Promoted(promoted), .. })) => {
                 let instance = self.frame().instance;
                 self.const_eval_raw(GlobalId {
                     instance,
-                    promoted: Some(promoted.0),
+                    promoted: Some(promoted),
                 })?
             }
 
-            Base(PlaceBase::Static(ref static_)) => {
-                assert!(!static_.ty.needs_subst());
-                let layout = self.layout_of(static_.ty)?;
-                let instance = ty::Instance::mono(*self.tcx, static_.def_id);
+            Base(PlaceBase::Static(box Static { kind: StaticKind::Static(def_id), ty })) => {
+                assert!(!ty.needs_subst());
+                let layout = self.layout_of(ty)?;
+                let instance = ty::Instance::mono(*self.tcx, def_id);
                 let cid = GlobalId {
                     instance,
                     promoted: None
@@ -606,7 +607,7 @@ where
                 // global table but not in its local memory: It calls back into tcx through
                 // a query, triggering the CTFE machinery to actually turn this lazy reference
                 // into a bunch of bytes.  IOW, statics are evaluated with CTFE even when
-                // this EvalContext uses another Machine (e.g., in miri).  This is what we
+                // this InterpretCx uses another Machine (e.g., in miri).  This is what we
                 // want!  This way, computing statics works concistently between codegen
                 // and miri: They use the same query to eventually obtain a `ty::Const`
                 // and use that for further computation.

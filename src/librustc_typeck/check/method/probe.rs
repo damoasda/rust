@@ -120,7 +120,7 @@ struct Candidate<'tcx> {
     xform_ret_ty: Option<Ty<'tcx>>,
     item: ty::AssociatedItem,
     kind: CandidateKind<'tcx>,
-    import_id: Option<ast::NodeId>,
+    import_id: Option<hir::HirId>,
 }
 
 #[derive(Debug)]
@@ -145,7 +145,7 @@ enum ProbeResult {
 pub struct Pick<'tcx> {
     pub item: ty::AssociatedItem,
     pub kind: PickKind<'tcx>,
-    pub import_id: Option<ast::NodeId>,
+    pub import_id: Option<hir::HirId>,
 
     // Indicates that the source expression should be autoderef'd N times
     //
@@ -836,7 +836,8 @@ impl<'a, 'gcx, 'tcx> ProbeContext<'a, 'gcx, 'tcx> {
             for trait_candidate in applicable_traits.iter() {
                 let trait_did = trait_candidate.def_id;
                 if duplicates.insert(trait_did) {
-                    let import_id = trait_candidate.import_id;
+                    let import_id = trait_candidate.import_id.map(|node_id|
+                        self.fcx.tcx.hir().node_to_hir_id(node_id));
                     let result = self.assemble_extension_candidates_for_trait(import_id, trait_did);
                     result?;
                 }
@@ -887,7 +888,7 @@ impl<'a, 'gcx, 'tcx> ProbeContext<'a, 'gcx, 'tcx> {
     }
 
     fn assemble_extension_candidates_for_trait(&mut self,
-                                               import_id: Option<ast::NodeId>,
+                                               import_id: Option<hir::HirId>,
                                                trait_def_id: DefId)
                                                -> Result<(), MethodError<'tcx>> {
         debug!("assemble_extension_candidates_for_trait(trait_def_id={:?})",
@@ -1195,7 +1196,7 @@ impl<'a, 'gcx, 'tcx> ProbeContext<'a, 'gcx, 'tcx> {
         // `report_method_error()`.
         diag.help(&format!(
             "call with fully qualified syntax `{}(...)` to keep using the current method",
-            self.tcx.item_path_str(stable_pick.item.def_id),
+            self.tcx.def_path_str(stable_pick.item.def_id),
         ));
 
         if nightly_options::is_nightly_build() {
@@ -1203,7 +1204,7 @@ impl<'a, 'gcx, 'tcx> ProbeContext<'a, 'gcx, 'tcx> {
                 diag.help(&format!(
                     "add #![feature({})] to the crate attributes to enable `{}`",
                     feature,
-                    self.tcx.item_path_str(candidate.item.def_id),
+                    self.tcx.def_path_str(candidate.item.def_id),
                 ));
             }
         }

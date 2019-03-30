@@ -9,9 +9,9 @@ use rustc::mir::interpret::{
 use rustc::mir::CastKind;
 use rustc_apfloat::Float;
 
-use super::{EvalContext, Machine, PlaceTy, OpTy, ImmTy, Immediate};
+use super::{InterpretCx, Machine, PlaceTy, OpTy, ImmTy, Immediate};
 
-impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> {
+impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> {
     fn type_is_fat_ptr(&self, ty: Ty<'tcx>) -> bool {
         match ty.sty {
             ty::RawPtr(ty::TypeAndMut { ty, .. }) |
@@ -90,7 +90,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                         let fn_ptr = self.memory.create_fn_alloc(instance?).with_default_tag();
                         self.write_scalar(Scalar::Ptr(fn_ptr.into()), dest)?;
                     }
-                    ref other => bug!("reify fn pointer on {:?}", other),
+                    _ => bug!("reify fn pointer on {:?}", src.layout.ty),
                 }
             }
 
@@ -101,7 +101,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                         // No change to value
                         self.write_immediate(*src, dest)?;
                     }
-                    ref other => bug!("fn to unsafe fn cast on {:?}", other),
+                    _ => bug!("fn to unsafe fn cast on {:?}", dest.layout.ty),
                 }
             }
 
@@ -120,7 +120,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                         let val = Immediate::Scalar(Scalar::Ptr(fn_ptr.into()).into());
                         self.write_immediate(val, dest)?;
                     }
-                    ref other => bug!("closure fn pointer on {:?}", other),
+                    _ => bug!("closure fn pointer on {:?}", src.layout.ty),
                 }
             }
         }

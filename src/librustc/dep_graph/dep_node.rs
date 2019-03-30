@@ -85,11 +85,6 @@ macro_rules! is_anon_attr {
     ($attr:ident) => (false);
 }
 
-macro_rules! is_input_attr {
-    (input) => (true);
-    ($attr:ident) => (false);
-}
-
 macro_rules! is_eval_always_attr {
     (eval_always) => (true);
     ($attr:ident) => (false);
@@ -97,10 +92,6 @@ macro_rules! is_eval_always_attr {
 
 macro_rules! contains_anon_attr {
     ($($attr:ident),*) => ({$(is_anon_attr!($attr) | )* false});
-}
-
-macro_rules! contains_input_attr {
-    ($($attr:ident),*) => ({$(is_input_attr!($attr) | )* false});
 }
 
 macro_rules! contains_eval_always_attr {
@@ -151,22 +142,13 @@ macro_rules! define_dep_nodes {
                 }
             }
 
-            // FIXME: Make `is_anon`, `is_input`, `is_eval_always` and `has_params` properties
+            // FIXME: Make `is_anon`, `is_eval_always` and `has_params` properties
             // of queries
             #[inline(always)]
             pub fn is_anon(&self) -> bool {
                 match *self {
                     $(
                         DepKind :: $variant => { contains_anon_attr!($($attr),*) }
-                    )*
-                }
-            }
-
-            #[inline(always)]
-            pub fn is_input(&self) -> bool {
-                match *self {
-                    $(
-                        DepKind :: $variant => { contains_input_attr!($($attr),*) }
                     )*
                 }
             }
@@ -423,7 +405,7 @@ impl DefId {
     }
 }
 
-define_dep_nodes!( <'tcx>
+rustc_dep_node_append!([define_dep_nodes!][ <'tcx>
     // We use this for most things when incr. comp. is turned off.
     [] Null,
 
@@ -438,17 +420,17 @@ define_dep_nodes!( <'tcx>
     // suitable wrapper, you can use `tcx.dep_graph.ignore()` to gain
     // access to the krate, but you must remember to add suitable
     // edges yourself for the individual items that you read.
-    [input] Krate,
+    [eval_always] Krate,
 
     // Represents the body of a function or method. The def-id is that of the
     // function/method.
-    [input] HirBody(DefId),
+    [eval_always] HirBody(DefId),
 
     // Represents the HIR node with the given node-id
-    [input] Hir(DefId),
+    [eval_always] Hir(DefId),
 
     // Represents metadata from an extern crate.
-    [input] CrateMetadata(CrateNum),
+    [eval_always] CrateMetadata(CrateNum),
 
     // Represents different phases in the compiler.
     [] RegionScopeTree(DefId),
@@ -456,15 +438,11 @@ define_dep_nodes!( <'tcx>
     [eval_always] CoherenceInherentImplOverlapCheck,
     [] CoherenceCheckTrait(DefId),
     [eval_always] PrivacyAccessLevels(CrateNum),
+    [eval_always] CheckPrivateInPublic(CrateNum),
     [eval_always] Analysis(CrateNum),
 
     // Represents the MIR for a fn; also used as the task node for
     // things read/modify that MIR.
-    [] MirConstQualif(DefId),
-    [] MirBuilt(DefId),
-    [] MirConst(DefId),
-    [] MirValidated(DefId),
-    [] MirOptimized(DefId),
     [] MirShim { instance_def: InstanceDef<'tcx> },
 
     [] BorrowCheckKrate,
@@ -473,6 +451,7 @@ define_dep_nodes!( <'tcx>
     [] UnsafetyCheckResult(DefId),
     [] UnsafeDeriveOnReprPacked(DefId),
 
+    [] LintMod(DefId),
     [] CheckModAttrs(DefId),
     [] CheckModLoops(DefId),
     [] CheckModUnstableApiUsage(DefId),
@@ -484,16 +463,12 @@ define_dep_nodes!( <'tcx>
     [] CollectModItemTypes(DefId),
 
     [] Reachability,
-    [] MirKeys,
-    [eval_always] CrateVariances,
+    [] CrateVariances,
 
     // Nodes representing bits of computed IR in the tcx. Each shared
     // table in the tcx (or elsewhere) maps to one of these
     // nodes.
     [] AssociatedItems(DefId),
-    [] TypeOfItem(DefId),
-    [] GenericsOfItem(DefId),
-    [] PredicatesOfItem(DefId),
     [] ExplicitPredicatesOfItem(DefId),
     [] PredicatesDefinedOnItem(DefId),
     [] InferredOutlivesOf(DefId),
@@ -541,12 +516,11 @@ define_dep_nodes!( <'tcx>
     // The set of impls for a given trait.
     [] TraitImpls(DefId),
 
-    [input] AllLocalTraitImpls,
+    [eval_always] AllLocalTraitImpls,
 
     [anon] TraitSelect,
 
     [] ParamEnv(DefId),
-    [] Environment(DefId),
     [] DescribeDef(DefId),
 
     // FIXME(mw): DefSpans are not really inputs since they are derived from
@@ -554,7 +528,7 @@ define_dep_nodes!( <'tcx>
     // to make type debuginfo to be source location independent. Declaring
     // DefSpan an input makes sure that changes to these are always detected
     // regardless of HIR hashing.
-    [input] DefSpan(DefId),
+    [eval_always] DefSpan(DefId),
     [] LookupStability(DefId),
     [] LookupDeprecationEntry(DefId),
     [] ConstIsRvaluePromotableToStatic(DefId),
@@ -569,15 +543,13 @@ define_dep_nodes!( <'tcx>
     [] FnArgNames(DefId),
     [] RenderedConst(DefId),
     [] DylibDepFormats(CrateNum),
-    [] IsPanicRuntime(CrateNum),
     [] IsCompilerBuiltins(CrateNum),
     [] HasGlobalAllocator(CrateNum),
     [] HasPanicHandler(CrateNum),
-    [input] ExternCrate(DefId),
-    [eval_always] LintLevels,
+    [eval_always] ExternCrate(DefId),
     [] Specializes { impl1: DefId, impl2: DefId },
-    [input] InScopeTraits(DefIndex),
-    [input] ModuleExports(DefId),
+    [eval_always] InScopeTraits(DefIndex),
+    [eval_always] ModuleExports(DefId),
     [] IsSanitizerRuntime(CrateNum),
     [] IsProfilerRuntime(CrateNum),
     [] GetPanicStrategy(CrateNum),
@@ -587,14 +559,13 @@ define_dep_nodes!( <'tcx>
     [] CheckTraitItemWellFormed(DefId),
     [] CheckImplItemWellFormed(DefId),
     [] ReachableNonGenerics(CrateNum),
-    [] NativeLibraries(CrateNum),
     [] EntryFn(CrateNum),
     [] PluginRegistrarFn(CrateNum),
     [] ProcMacroDeclsStatic(CrateNum),
-    [input] CrateDisambiguator(CrateNum),
-    [input] CrateHash(CrateNum),
-    [input] OriginalCrateName(CrateNum),
-    [input] ExtraFileName(CrateNum),
+    [eval_always] CrateDisambiguator(CrateNum),
+    [eval_always] CrateHash(CrateNum),
+    [eval_always] OriginalCrateName(CrateNum),
+    [eval_always] ExtraFileName(CrateNum),
 
     [] ImplementationsOfTrait { krate: CrateNum, trait_id: DefId },
     [] AllTraitImplementations(CrateNum),
@@ -603,7 +574,7 @@ define_dep_nodes!( <'tcx>
     [] IsDllimportForeignItem(DefId),
     [] IsStaticallyIncludedForeignItem(DefId),
     [] NativeLibraryKind(DefId),
-    [input] LinkArgs,
+    [eval_always] LinkArgs,
 
     [] ResolveLifetimes(CrateNum),
     [] NamedRegion(DefIndex),
@@ -611,8 +582,8 @@ define_dep_nodes!( <'tcx>
     [] ObjectLifetimeDefaults(DefIndex),
 
     [] Visibility(DefId),
-    [input] DepKind(CrateNum),
-    [input] CrateName(CrateNum),
+    [eval_always] DepKind(CrateNum),
+    [eval_always] CrateName(CrateNum),
     [] ItemChildren(DefId),
     [] ExternModStmtCnum(DefId),
     [eval_always] GetLibFeatures,
@@ -621,32 +592,24 @@ define_dep_nodes!( <'tcx>
     [] DefinedLangItems(CrateNum),
     [] MissingLangItems(CrateNum),
     [] VisibleParentMap,
-    [input] MissingExternCrateItem(CrateNum),
-    [input] UsedCrateSource(CrateNum),
-    [input] PostorderCnums,
+    [eval_always] MissingExternCrateItem(CrateNum),
+    [eval_always] UsedCrateSource(CrateNum),
+    [eval_always] PostorderCnums,
 
-    // These queries are not expected to have inputs -- as a result, they
-    // are not good candidates for "replay" because they are essentially
-    // pure functions of their input (and hence the expectation is that
-    // no caller would be green **apart** from just these
-    // queries). Making them anonymous avoids hashing the result, which
-    // may save a bit of time.
-    [anon] EraseRegionsTy { ty: Ty<'tcx> },
-
-    [input] Freevars(DefId),
-    [input] MaybeUnusedTraitImport(DefId),
-    [input] MaybeUnusedExternCrates,
-    [input] NamesImportedByGlobUse(DefId),
+    [eval_always] Freevars(DefId),
+    [eval_always] MaybeUnusedTraitImport(DefId),
+    [eval_always] MaybeUnusedExternCrates,
+    [eval_always] NamesImportedByGlobUse(DefId),
     [eval_always] StabilityIndex,
     [eval_always] AllTraits,
-    [input] AllCrateNums,
+    [eval_always] AllCrateNums,
     [] ExportedSymbols(CrateNum),
     [eval_always] CollectAndPartitionMonoItems,
     [] IsCodegenedItem(DefId),
     [] CodegenUnit(InternedString),
     [] BackendOptimizationLevel(CrateNum),
     [] CompileCodegenUnit(InternedString),
-    [input] OutputFilenames,
+    [eval_always] OutputFilenames,
     [] NormalizeProjectionTy(CanonicalProjectionGoal<'tcx>),
     [] NormalizeTyAfterErasingRegions(ParamEnvAnd<'tcx, Ty<'tcx>>),
     [] ImpliedOutlivesBounds(CanonicalTyGoal<'tcx>),
@@ -665,20 +628,33 @@ define_dep_nodes!( <'tcx>
     [] SubstituteNormalizeAndTestPredicates { key: (DefId, SubstsRef<'tcx>) },
     [] MethodAutoderefSteps(CanonicalTyGoal<'tcx>),
 
-    [input] TargetFeaturesWhitelist,
+    [eval_always] TargetFeaturesWhitelist,
 
     [] InstanceDefSizeEstimate { instance_def: InstanceDef<'tcx> },
 
-    [input] Features,
+    [eval_always] Features,
 
-    [] ProgramClausesFor(DefId),
-    [] ProgramClausesForEnv(traits::Environment<'tcx>),
-    [] WasmImportModuleMap(CrateNum),
     [] ForeignModules(CrateNum),
 
     [] UpstreamMonomorphizations(CrateNum),
     [] UpstreamMonomorphizationsFor(DefId),
-);
+]);
+
+pub trait RecoverKey<'tcx>: Sized {
+    fn recover(tcx: TyCtxt<'_, 'tcx, 'tcx>, dep_node: &DepNode) -> Option<Self>;
+}
+
+impl RecoverKey<'tcx> for CrateNum {
+    fn recover(tcx: TyCtxt<'_, 'tcx, 'tcx>, dep_node: &DepNode) -> Option<Self> {
+        dep_node.extract_def_id(tcx).map(|id| id.krate)
+    }
+}
+
+impl RecoverKey<'tcx> for DefId {
+    fn recover(tcx: TyCtxt<'_, 'tcx, 'tcx>, dep_node: &DepNode) -> Option<Self> {
+        dep_node.extract_def_id(tcx)
+    }
+}
 
 trait DepNodeParams<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> : fmt::Debug {
     const CAN_RECONSTRUCT_QUERY_KEY: bool;
@@ -723,7 +699,7 @@ impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for DefId {
     }
 
     fn to_debug_str(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> String {
-        tcx.item_path_str(*self)
+        tcx.def_path_str(*self)
     }
 }
 
@@ -735,7 +711,7 @@ impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for DefIndex {
     }
 
     fn to_debug_str(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> String {
-        tcx.item_path_str(DefId::local(*self))
+        tcx.def_path_str(DefId::local(*self))
     }
 }
 

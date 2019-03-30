@@ -80,7 +80,7 @@ impl<'a, 'tcx: 'a, V: CodegenObject> PlaceRef<'tcx, V> {
         Self::alloca(bx, ptr_layout, name)
     }
 
-    pub fn len<Cx: CodegenMethods<'tcx, Value = V>>(
+    pub fn len<Cx: ConstMethods<'tcx, Value = V>>(
         &self,
         cx: &Cx
     ) -> V {
@@ -408,11 +408,15 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         let result = match *place {
             mir::Place::Base(mir::PlaceBase::Local(_)) => bug!(), // handled above
-            mir::Place::Base(mir::PlaceBase::Promoted(box (index, ty))) => {
+            mir::Place::Base(
+                mir::PlaceBase::Static(
+                    box mir::Static { ty, kind: mir::StaticKind::Promoted(promoted) }
+                )
+            ) => {
                 let param_env = ty::ParamEnv::reveal_all();
                 let cid = mir::interpret::GlobalId {
                     instance: self.instance,
-                    promoted: Some(index),
+                    promoted: Some(promoted),
                 };
                 let layout = cx.layout_of(self.monomorphize(&ty));
                 match bx.tcx().const_eval(param_env.and(cid)) {
@@ -435,11 +439,16 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     }
                 }
             }
-            mir::Place::Base(mir::PlaceBase::Static(box mir::Static { def_id, ty })) => {
+            mir::Place::Base(
+                mir::PlaceBase::Static(
+                    box mir::Static { ty, kind: mir::StaticKind::Static(def_id) }
+                )
+            ) => {
                 // NB: The layout of a static may be unsized as is the case when working
                 // with a static that is an extern_type.
                 let layout = cx.layout_of(self.monomorphize(&ty));
-                PlaceRef::new_thin_place(bx, bx.get_static(def_id), layout, layout.align.abi)
+                let static_ = bx.get_static(def_id);
+                PlaceRef::new_thin_place(bx, static_, layout, layout.align.abi)
             },
             mir::Place::Projection(box mir::Projection {
                 ref base,

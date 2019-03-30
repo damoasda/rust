@@ -18,8 +18,8 @@ alloc = { path = "../liballoc" }
 panic_unwind = { path = "../libpanic_unwind", optional = true }
 panic_abort = { path = "../libpanic_abort" }
 core = { path = "../libcore" }
-libc = { version = "0.2.44", default-features = false, features = ['rustc-dep-of-std'] }
-compiler_builtins = { version = "0.1.1" }
+libc = { version = "0.2.51", default-features = false, features = ['rustc-dep-of-std'] }
+compiler_builtins = { version = "0.1.8" }
 profiler_builtins = { path = "../libprofiler_builtins", optional = true }
 unwind = { path = "../libunwind" }
 rustc-demangle = { version = "0.1.10", features = ['rustc-dep-of-std'] }
@@ -72,3 +72,7 @@ wasm-bindgen-threads = []
 # https://github.com/rust-lang-nursery/stdsimd/blob/master/crates/std_detect/Cargo.toml
 std_detect_file_io = []
 std_detect_dlsym_getauxval = []
+
+[package.metadata.fortanix-sgx]
+# Maximum possible number of threads when testing
+threads = 125

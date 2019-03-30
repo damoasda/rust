@@ -10,8 +10,10 @@ use syntax::symbol::Symbol;
 use syntax::ast::{Attribute, MetaItem, MetaItemKind};
 use syntax_pos::Span;
 use rustc_data_structures::fx::{FxHashSet, FxHashMap};
+use rustc_macros::HashStable;
 use errors::DiagnosticId;
 
+#[derive(HashStable)]
 pub struct LibFeatures {
     // A map from feature to stabilisation version.
     pub stable: FxHashMap<Symbol, Symbol>,
@@ -63,7 +65,7 @@ impl<'a, 'tcx> LibFeatureCollector<'a, 'tcx> {
                 for meta in metas {
                     if let Some(mi) = meta.meta_item() {
                         // Find the `feature = ".."` meta-item.
-                        match (&*mi.name().as_str(), mi.value_str()) {
+                        match (mi.name_or_empty().get(), mi.value_str()) {
                             ("feature", val) => feature = val,
                             ("since", val) => since = val,
                             _ => {}

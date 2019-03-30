@@ -163,6 +163,7 @@ use crate::ffi::{CStr, CString};
 use crate::fmt;
 use crate::io;
 use crate::mem;
+use crate::num::NonZeroU64;
 use crate::panic;
 use crate::panicking;
 use crate::str;
@@ -1036,7 +1037,7 @@ pub fn park_timeout(dur: Duration) {
 /// [`Thread`]: ../../std/thread/struct.Thread.html
 #[stable(feature = "thread_id", since = "1.19.0")]
 #[derive(Eq, PartialEq, Clone, Copy, Hash, Debug)]
-pub struct ThreadId(u64);
+pub struct ThreadId(NonZeroU64);
 
 impl ThreadId {
     // Generate a new unique thread ID.
@@ -1044,7 +1045,7 @@ impl ThreadId {
         // We never call `GUARD.init()`, so it is UB to attempt to
         // acquire this mutex reentrantly!
         static GUARD: mutex::Mutex = mutex::Mutex::new();
-        static mut COUNTER: u64 = 0;
+        static mut COUNTER: u64 = 1;
 
         unsafe {
             let _guard = GUARD.lock();
@@ -1058,7 +1059,7 @@ impl ThreadId {
             let id = COUNTER;
             COUNTER += 1;
 
-            ThreadId(id)
+            ThreadId(NonZeroU64::new(id).unwrap())
         }
     }
 }
@@ -1256,7 +1257,10 @@ impl Thread {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl fmt::Debug for Thread {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Debug::fmt(&self.name(), f)
+        f.debug_struct("Thread")
+            .field("id", &self.id())
+            .field("name", &self.name())
+            .finish()
     }
 }
 
@@ -1484,9 +1488,10 @@ fn _assert_sync_and_send() {
 mod tests {
     use super::Builder;
     use crate::any::Any;
+    use crate::mem;
     use crate::sync::mpsc::{channel, Sender};
     use crate::result;
-    use crate::thread;
+    use crate::thread::{self, ThreadId};
     use crate::time::Duration;
     use crate::u32;
 
@@ -1497,7 +1502,7 @@ mod tests {
     fn test_unnamed_thread() {
         thread::spawn(move|| {
             assert!(thread::current().name().is_none());
-        }).join().ok().unwrap();
+        }).join().ok().expect("thread panicked");
     }
 
     #[test]
@@ -1691,6 +1696,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_env = "sgx", ignore)] // FIXME: https://github.com/fortanix/rust-sgx/issues/31
     fn test_park_timeout_unpark_not_called() {
         for _ in 0..10 {
             thread::park_timeout(Duration::from_millis(10));
@@ -1698,6 +1704,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_env = "sgx", ignore)] // FIXME: https://github.com/fortanix/rust-sgx/issues/31
     fn test_park_timeout_unpark_called_other_thread() {
         for _ in 0..10 {
             let th = thread::current();
@@ -1712,8 +1719,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_env = "sgx", ignore)] // FIXME: https://github.com/fortanix/rust-sgx/issues/31
     fn sleep_ms_smoke() {
         thread::sleep(Duration::from_millis(2));
+    }
+
+    #[test]
+    fn test_size_of_option_thread_id() {
+        assert_eq!(mem::size_of::<Option<ThreadId>>(), mem::size_of::<ThreadId>());
     }
 
     #[test]

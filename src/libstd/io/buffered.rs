@@ -21,6 +21,10 @@ use crate::memchr;
 /// times. It also provides no advantage when reading from a source that is
 /// already in memory, like a `Vec<u8>`.
 ///
+/// When the `BufReader` is dropped, the contents of its buffer will be
+/// discarded. Creating multiple instances of a `BufReader` on the same
+/// stream can cause data loss.
+///
 /// [`Read`]: ../../std/io/trait.Read.html
 /// [`TcpStream::read`]: ../../std/net/struct.TcpStream.html#method.read
 /// [`TcpStream`]: ../../std/net/struct.TcpStream.html
@@ -193,6 +197,13 @@ impl<R> BufReader<R> {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn into_inner(self) -> R { self.inner }
+
+    /// Invalidates all data in the internal buffer.
+    #[inline]
+    fn discard_buffer(&mut self) {
+        self.pos = 0;
+        self.cap = 0;
+    }
 }
 
 impl<R: Seek> BufReader<R> {
@@ -227,6 +238,7 @@ impl<R: Read> Read for BufReader<R> {
         // (larger than our internal buffer), bypass our internal buffer
         // entirely.
         if self.pos == self.cap && buf.len() >= self.buf.len() {
+            self.discard_buffer();
             return self.inner.read(buf);
         }
         let nread = {
@@ -240,6 +252,7 @@ impl<R: Read> Read for BufReader<R> {
     fn read_vectored(&mut self, bufs: &mut [IoVecMut<'_>]) -> io::Result<usize> {
         let total_len = bufs.iter().map(|b| b.len()).sum::<usize>();
         if self.pos == self.cap && total_len >= self.buf.len() {
+            self.discard_buffer();
             return self.inner.read_vectored(bufs);
         }
         let nread = {
@@ -325,14 +338,14 @@ impl<R: Seek> Seek for BufReader<R> {
             } else {
                 // seek backwards by our remainder, and then by the offset
                 self.inner.seek(SeekFrom::Current(-remainder))?;
-                self.pos = self.cap; // empty the buffer
+                self.discard_buffer();
                 result = self.inner.seek(SeekFrom::Current(n))?;
             }
         } else {
             // Seeking with Start/End doesn't care about our buffer length.
             result = self.inner.seek(pos)?;
         }
-        self.pos = self.cap; // empty the buffer
+        self.discard_buffer();
         Ok(result)
     }
 }
@@ -341,7 +354,7 @@ impl<R: Seek> Seek for BufReader<R> {
 ///
 /// It can be excessively inefficient to work directly with something that
 /// implements [`Write`]. For example, every call to
-/// [`write`][`Tcpstream::write`] on [`TcpStream`] results in a system call. A
+/// [`write`][`TcpStream::write`] on [`TcpStream`] results in a system call. A
 /// `BufWriter` keeps an in-memory buffer of data and writes it to an underlying
 /// writer in large, infrequent batches.
 ///
@@ -392,7 +405,7 @@ impl<R: Seek> Seek for BufReader<R> {
 /// the `stream` is dropped.
 ///
 /// [`Write`]: ../../std/io/trait.Write.html
-/// [`Tcpstream::write`]: ../../std/net/struct.TcpStream.html#method.write
+/// [`TcpStream::write`]: ../../std/net/struct.TcpStream.html#method.write
 /// [`TcpStream`]: ../../std/net/struct.TcpStream.html
 /// [`flush`]: #method.flush
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1066,6 +1079,40 @@ mod tests {
         assert_eq!(reader.fill_buf().ok(), Some(&[0, 1][..]));
         assert!(reader.seek_relative(2).is_ok());
         assert_eq!(reader.fill_buf().ok(), Some(&[2, 3][..]));
+    }
+
+    #[test]
+    fn test_buffered_reader_invalidated_after_read() {
+        let inner: &[u8] = &[5, 6, 7, 0, 1, 2, 3, 4];
+        let mut reader = BufReader::with_capacity(3, io::Cursor::new(inner));
+
+        assert_eq!(reader.fill_buf().ok(), Some(&[5, 6, 7][..]));
+        reader.consume(3);
+
+        let mut buffer = [0, 0, 0, 0, 0];
+        assert_eq!(reader.read(&mut buffer).ok(), Some(5));
+        assert_eq!(buffer, [0, 1, 2, 3, 4]);
+
+        assert!(reader.seek_relative(-2).is_ok());
+        let mut buffer = [0, 0];
+        assert_eq!(reader.read(&mut buffer).ok(), Some(2));
+        assert_eq!(buffer, [3, 4]);
+    }
+
+    #[test]
+    fn test_buffered_reader_invalidated_after_seek() {
+        let inner: &[u8] = &[5, 6, 7, 0, 1, 2, 3, 4];
+        let mut reader = BufReader::with_capacity(3, io::Cursor::new(inner));
+
+        assert_eq!(reader.fill_buf().ok(), Some(&[5, 6, 7][..]));
+        reader.consume(3);
+
+        assert!(reader.seek(SeekFrom::Current(5)).is_ok());
+
+        assert!(reader.seek_relative(-2).is_ok());
+        let mut buffer = [0, 0];
+        assert_eq!(reader.read(&mut buffer).ok(), Some(2));
+        assert_eq!(buffer, [3, 4]);
     }
 
     #[test]

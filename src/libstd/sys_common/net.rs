@@ -157,7 +157,7 @@ impl Drop for LookupHost {
     }
 }
 
-impl<'a> TryFrom<&'a str> for LookupHost {
+impl TryFrom<&str> for LookupHost {
     type Error = io::Error;
 
     fn try_from(s: &str) -> io::Result<LookupHost> {
@@ -471,6 +471,12 @@ impl UdpSocket {
     pub fn socket(&self) -> &Socket { &self.inner }
 
     pub fn into_socket(self) -> Socket { self.inner }
+
+    pub fn peer_addr(&self) -> io::Result<SocketAddr> {
+        sockname(|buf, len| unsafe {
+            c::getpeername(*self.inner.as_inner(), buf, len)
+        })
+    }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
         sockname(|buf, len| unsafe {

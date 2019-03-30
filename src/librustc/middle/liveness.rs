@@ -185,12 +185,6 @@ fn check_mod_liveness<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>, module_def_id: DefId) {
     tcx.hir().visit_item_likes_in_module(module_def_id, &mut IrMaps::new(tcx).as_deep_visitor());
 }
 
-pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
-    for &module in tcx.hir().krate().modules.keys() {
-        tcx.ensure().check_mod_liveness(tcx.hir().local_def_id(module));
-    }
-}
-
 pub fn provide(providers: &mut Providers<'_>) {
     *providers = Providers {
         check_mod_liveness,
@@ -379,9 +373,22 @@ fn visit_fn<'a, 'tcx: 'a>(ir: &mut IrMaps<'a, 'tcx>,
     let body = ir.tcx.hir().body(body_id);
 
     for arg in &body.arguments {
+        let is_shorthand = match arg.pat.node {
+            crate::hir::PatKind::Struct(..) => true,
+            _ => false,
+        };
         arg.pat.each_binding(|_bm, hir_id, _x, ident| {
             debug!("adding argument {:?}", hir_id);
-            fn_maps.add_variable(Arg(hir_id, ident.name));
+            let var = if is_shorthand {
+                Local(LocalInfo {
+                    id: hir_id,
+                    name: ident.name,
+                    is_shorthand: true,
+                })
+            } else {
+                Arg(hir_id, ident.name)
+            };
+            fn_maps.add_variable(var);
         })
     };
 

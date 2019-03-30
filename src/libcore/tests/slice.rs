@@ -579,6 +579,19 @@ fn test_windows_nth() {
 }
 
 #[test]
+fn test_windows_nth_back() {
+    let v: &[i32] = &[0, 1, 2, 3, 4, 5];
+    let mut c = v.windows(2);
+    assert_eq!(c.nth_back(2).unwrap()[0], 2);
+    assert_eq!(c.next_back().unwrap()[1], 2);
+
+    let v2: &[i32] = &[0, 1, 2, 3, 4];
+    let mut c2 = v2.windows(4);
+    assert_eq!(c2.nth_back(1).unwrap()[1], 1);
+    assert_eq!(c2.next_back(), None);
+}
+
+#[test]
 fn test_windows_last() {
     let v: &[i32] = &[0, 1, 2, 3, 4, 5];
     let c = v.windows(2);
@@ -782,7 +795,6 @@ mod slice_index {
     //  to be used in `should_panic`)
     #[test]
     #[should_panic(expected = "out of range")]
-    #[cfg(not(miri))] // Miri does not support panics
     fn assert_range_eq_can_fail_by_panic() {
         assert_range_eq!([0, 1, 2], 0..5, [0, 1, 2]);
     }
@@ -792,7 +804,6 @@ mod slice_index {
     //  to be used in `should_panic`)
     #[test]
     #[should_panic(expected = "==")]
-    #[cfg(not(miri))] // Miri does not support panics
     fn assert_range_eq_can_fail_by_inequality() {
         assert_range_eq!([0, 1, 2], 0..2, [0, 1, 2]);
     }
@@ -842,7 +853,6 @@ mod slice_index {
 
                 #[test]
                 #[should_panic(expected = $expect_msg)]
-                #[cfg(not(miri))] // Miri does not support panics
                 fn index_fail() {
                     let v = $data;
                     let v: &[_] = &v;
@@ -851,7 +861,6 @@ mod slice_index {
 
                 #[test]
                 #[should_panic(expected = $expect_msg)]
-                #[cfg(not(miri))] // Miri does not support panics
                 fn index_mut_fail() {
                     let mut v = $data;
                     let v: &mut [_] = &mut v;
@@ -1304,7 +1313,6 @@ fn test_copy_within() {
 
 #[test]
 #[should_panic(expected = "src is out of bounds")]
-#[cfg(not(miri))] // Miri does not support panics
 fn test_copy_within_panics_src_too_long() {
     let mut bytes = *b"Hello, World!";
     // The length is only 13, so 14 is out of bounds.
@@ -1313,7 +1321,6 @@ fn test_copy_within_panics_src_too_long() {
 
 #[test]
 #[should_panic(expected = "dest is out of bounds")]
-#[cfg(not(miri))] // Miri does not support panics
 fn test_copy_within_panics_dest_too_long() {
     let mut bytes = *b"Hello, World!";
     // The length is only 13, so a slice of length 4 starting at index 10 is out of bounds.
@@ -1321,7 +1328,6 @@ fn test_copy_within_panics_dest_too_long() {
 }
 #[test]
 #[should_panic(expected = "src end is before src start")]
-#[cfg(not(miri))] // Miri does not support panics
 fn test_copy_within_panics_src_inverted() {
     let mut bytes = *b"Hello, World!";
     // 2 is greater than 1, so this range is invalid.

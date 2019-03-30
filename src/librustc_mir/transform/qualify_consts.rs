@@ -16,6 +16,7 @@ use rustc::ty::{self, TyCtxt, Ty, TypeFoldable};
 use rustc::ty::cast::CastTy;
 use rustc::ty::query::Providers;
 use rustc::mir::*;
+use rustc::mir::interpret::ConstValue;
 use rustc::mir::traversal::ReversePostorder;
 use rustc::mir::visit::{PlaceContext, Visitor, MutatingUseContext, NonMutatingUseContext};
 use rustc::middle::lang_items;
@@ -187,8 +188,11 @@ trait Qualif {
     fn in_place(cx: &ConstCx<'_, 'tcx>, place: &Place<'tcx>) -> bool {
         match *place {
             Place::Base(PlaceBase::Local(local)) => Self::in_local(cx, local),
-            Place::Base(PlaceBase::Promoted(_)) => bug!("qualifying already promoted MIR"),
-            Place::Base(PlaceBase::Static(ref static_)) => Self::in_static(cx, static_),
+            Place::Base(PlaceBase::Static(box Static {kind: StaticKind::Promoted(_), .. })) =>
+                bug!("qualifying already promoted MIR"),
+            Place::Base(PlaceBase::Static(ref static_)) => {
+                Self::in_static(cx, static_)
+            },
             Place::Projection(ref proj) => Self::in_projection(cx, proj),
         }
     }
@@ -199,12 +203,12 @@ trait Qualif {
             Operand::Move(ref place) => Self::in_place(cx, place),
 
             Operand::Constant(ref constant) => {
-                if let ty::LazyConst::Unevaluated(def_id, _) = constant.literal {
+                if let ConstValue::Unevaluated(def_id, _) = constant.literal.val {
                     // Don't peek inside trait associated constants.
-                    if cx.tcx.trait_of_item(*def_id).is_some() {
+                    if cx.tcx.trait_of_item(def_id).is_some() {
                         Self::in_any_value_of_ty(cx, constant.ty).unwrap_or(false)
                     } else {
-                        let (bits, _) = cx.tcx.at(constant.span).mir_const_qualif(*def_id);
+                        let (bits, _) = cx.tcx.at(constant.span).mir_const_qualif(def_id);
 
                         let qualif = PerQualif::decode_from_bits(bits).0[Self::IDX];
 
@@ -369,11 +373,18 @@ impl Qualif for IsNotConst {
     const IDX: usize = 2;
 
     fn in_static(cx: &ConstCx<'_, 'tcx>, static_: &Static<'tcx>) -> bool {
-        // Only allow statics (not consts) to refer to other statics.
-        let allowed = cx.mode == Mode::Static || cx.mode == Mode::StaticMut;
+        match static_.kind {
+            StaticKind::Promoted(_) => unreachable!(),
+            StaticKind::Static(def_id) => {
+                // Only allow statics (not consts) to refer to other statics.
+                let allowed = cx.mode == Mode::Static || cx.mode == Mode::StaticMut;
 
-        !allowed ||
-            cx.tcx.get_attrs(static_.def_id).iter().any(|attr| attr.check_name("thread_local"))
+                !allowed ||
+                    cx.tcx.get_attrs(def_id).iter().any(
+                        |attr| attr.check_name("thread_local"
+                    ))
+            }
+        }
     }
 
     fn in_projection(cx: &ConstCx<'_, 'tcx>, proj: &PlaceProjection<'tcx>) -> bool {
@@ -499,6 +510,8 @@ impl Qualif for IsNotConst {
 
 // Refers to temporaries which cannot be promoted as
 // promote_consts decided they weren't simple enough.
+// FIXME(oli-obk,eddyb): Remove this flag entirely and
+// solely process this information via `IsNotConst`.
 struct IsNotPromotable;
 
 impl Qualif for IsNotPromotable {
@@ -507,7 +520,7 @@ impl Qualif for IsNotPromotable {
     fn in_call(
         cx: &ConstCx<'_, 'tcx>,
         callee: &Operand<'tcx>,
-        _args: &[Operand<'tcx>],
+        args: &[Operand<'tcx>],
         _return_ty: Ty<'tcx>,
     ) -> bool {
         if cx.mode == Mode::Fn {
@@ -520,10 +533,7 @@ impl Qualif for IsNotPromotable {
             }
         }
 
-        // FIXME(eddyb) do we need "not promotable" in anything
-        // other than `Mode::Fn` by any chance?
-
-        false
+        Self::in_operand(cx, callee) || args.iter().any(|arg| Self::in_operand(cx, arg))
     }
 }
 
@@ -768,9 +778,9 @@ impl<'a, 'tcx> Checker<'a, 'tcx> {
                     );
                     dest = &proj.base;
                 },
-                Place::Base(PlaceBase::Promoted(..)) =>
+                Place::Base(PlaceBase::Static(box Static{ kind: StaticKind::Promoted(_), .. })) =>
                     bug!("promoteds don't exist yet during promotion"),
-                Place::Base(PlaceBase::Static(..)) => {
+                Place::Base(PlaceBase::Static(box Static{ kind: _, .. })) => {
                     // Catch more errors in the destination. `visit_place` also checks that we
                     // do not try to access statics from constants or try to mutate statics
                     self.visit_place(
@@ -919,11 +929,13 @@ impl<'a, 'tcx> Visitor<'tcx> for Checker<'a, 'tcx> {
         debug!("visit_place: place={:?} context={:?} location={:?}", place, context, location);
         self.super_place(place, context, location);
         match *place {
-            Place::Base(PlaceBase::Local(_)) |
-            Place::Base(PlaceBase::Promoted(_)) => {}
-            Place::Base(PlaceBase::Static(ref global)) => {
+            Place::Base(PlaceBase::Local(_)) => {}
+            Place::Base(PlaceBase::Static(box Static{ kind: StaticKind::Promoted(_), .. })) => {
+                unreachable!()
+            }
+            Place::Base(PlaceBase::Static(box Static{ kind: StaticKind::Static(def_id), .. })) => {
                 if self.tcx
-                       .get_attrs(global.def_id)
+                       .get_attrs(def_id)
                        .iter()
                        .any(|attr| attr.check_name("thread_local")) {
                     if self.mode != Mode::Fn {
@@ -1254,7 +1266,7 @@ impl<'a, 'tcx> Visitor<'tcx> for Checker<'a, 'tcx> {
                                     if !self.span.allows_unstable(&feature.as_str()) {
                                         let mut err = self.tcx.sess.struct_span_err(self.span,
                                             &format!("`{}` is not yet stable as a const fn",
-                                                    self.tcx.item_path_str(def_id)));
+                                                    self.tcx.def_path_str(def_id)));
                                         if nightly_options::is_nightly_build() {
                                             help!(&mut err,
                                                   "add `#![feature({})]` to the \

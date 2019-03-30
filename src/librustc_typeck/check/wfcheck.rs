@@ -1,5 +1,5 @@
 use crate::check::{Inherited, FnCtxt};
-use crate::constrained_type_params::{identify_constrained_type_params, Parameter};
+use crate::constrained_generic_params::{identify_constrained_generic_params, Parameter};
 
 use crate::hir::def_id::DefId;
 use rustc::traits::{self, ObligationCauseCode};
@@ -15,7 +15,7 @@ use syntax::feature_gate::{self, GateIssue};
 use syntax_pos::Span;
 use errors::{DiagnosticBuilder, DiagnosticId};
 
-use rustc::hir::itemlikevisit::ItemLikeVisitor;
+use rustc::hir::itemlikevisit::ParItemLikeVisitor;
 use rustc::hir;
 
 /// Helper type of a temporary returned by `.for_item(...)`.
@@ -68,7 +68,7 @@ pub fn check_item_well_formed<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: Def
 
     debug!("check_item_well_formed(it.hir_id={:?}, it.name={})",
            item.hir_id,
-           tcx.item_path_str(def_id));
+           tcx.def_path_str(def_id));
 
     match item.node {
         // Right now we check that every default trait implementation
@@ -251,11 +251,14 @@ fn check_type_defn<'a, 'tcx, F>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             let needs_drop_copy = || {
                 packed && {
                     let ty = variant.fields.last().unwrap().ty;
-                    let ty = fcx.tcx.erase_regions(&ty).lift_to_tcx(fcx_tcx)
+                    fcx.tcx.erase_regions(&ty).lift_to_tcx(fcx_tcx)
+                        .map(|ty| ty.needs_drop(fcx_tcx, fcx_tcx.param_env(def_id)))
                         .unwrap_or_else(|| {
-                            span_bug!(item.span, "inference variables in {:?}", ty)
-                        });
-                    ty.needs_drop(fcx_tcx, fcx_tcx.param_env(def_id))
+                            fcx_tcx.sess.delay_span_bug(
+                                item.span, &format!("inference variables in {:?}", ty));
+                            // Just treat unresolved type expression as if it needs drop.
+                            true
+                        })
                 }
             };
             let all_sized =
@@ -503,11 +506,8 @@ fn check_where_clauses<'a, 'gcx, 'fcx, 'tcx>(
                 true
             }
 
-            fn visit_const(&mut self, c: &'tcx ty::LazyConst<'tcx>) -> bool {
-                if let ty::LazyConst::Evaluated(ty::Const {
-                    val: ConstValue::Param(param),
-                    ..
-                }) = c {
+            fn visit_const(&mut self, c: &'tcx ty::Const<'tcx>) -> bool {
+                if let ConstValue::Param(param) = c.val {
                     self.params.insert(param.index);
                 }
                 c.super_visit_with(self)
@@ -615,7 +615,7 @@ fn check_existential_types<'a, 'fcx, 'gcx, 'tcx>(
     span: Span,
     ty: Ty<'tcx>,
 ) -> Vec<ty::Predicate<'tcx>> {
-    trace!("check_existential_types: {:?}, {:?}", ty, ty.sty);
+    trace!("check_existential_types: {:?}", ty);
     let mut substituted_predicates = Vec::new();
     ty.fold_with(&mut ty::fold::BottomUpFolder {
         tcx: fcx.tcx,
@@ -675,11 +675,8 @@ fn check_existential_types<'a, 'fcx, 'gcx, 'tcx>(
                                     }
                                 }
 
-                                ty::subst::UnpackedKind::Const(ct) => match ct {
-                                    ty::LazyConst::Evaluated(ty::Const {
-                                        val: ConstValue::Param(_),
-                                        ..
-                                    }) => {}
+                                ty::subst::UnpackedKind::Const(ct) => match ct.val {
+                                    ConstValue::Param(_) => {}
                                     _ => {
                                         tcx.sess
                                             .struct_span_err(
@@ -881,7 +878,9 @@ fn receiver_is_valid<'fcx, 'tcx, 'gcx>(
         } else {
             debug!("receiver_is_valid: type `{:?}` does not deref to `{:?}`",
                 receiver_ty, self_ty);
-            return false
+            // If he receiver already has errors reported due to it, consider it valid to avoid
+            // unecessary errors (#58712).
+            return receiver_ty.references_error();
         }
 
         // without the `arbitrary_self_types` feature, `receiver_ty` must directly deref to
@@ -942,7 +941,7 @@ fn check_variances_for_type_defn<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                         .map(|(index, _)| Parameter(index as u32))
                         .collect();
 
-    identify_constrained_type_params(tcx,
+    identify_constrained_generic_params(tcx,
                                      &ty_predicates,
                                      None,
                                      &mut constrained_parameters);
@@ -971,7 +970,7 @@ fn report_bivariance<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     if let Some(def_id) = suggested_marker_id {
         err.help(&format!("consider removing `{}` or using a marker such as `{}`",
                           param_name,
-                          tcx.item_path_str(def_id)));
+                          tcx.def_path_str(def_id)));
     }
     err.emit();
 }
@@ -1056,20 +1055,20 @@ impl<'a, 'gcx> CheckTypeWellFormedVisitor<'a, 'gcx> {
     }
 }
 
-impl<'a, 'tcx> ItemLikeVisitor<'tcx> for CheckTypeWellFormedVisitor<'a, 'tcx> {
-    fn visit_item(&mut self, i: &'tcx hir::Item) {
+impl<'a, 'tcx> ParItemLikeVisitor<'tcx> for CheckTypeWellFormedVisitor<'a, 'tcx> {
+    fn visit_item(&self, i: &'tcx hir::Item) {
         debug!("visit_item: {:?}", i);
         let def_id = self.tcx.hir().local_def_id_from_hir_id(i.hir_id);
         self.tcx.ensure().check_item_well_formed(def_id);
     }
 
-    fn visit_trait_item(&mut self, trait_item: &'tcx hir::TraitItem) {
+    fn visit_trait_item(&self, trait_item: &'tcx hir::TraitItem) {
         debug!("visit_trait_item: {:?}", trait_item);
         let def_id = self.tcx.hir().local_def_id_from_hir_id(trait_item.hir_id);
         self.tcx.ensure().check_trait_item_well_formed(def_id);
     }
 
-    fn visit_impl_item(&mut self, impl_item: &'tcx hir::ImplItem) {
+    fn visit_impl_item(&self, impl_item: &'tcx hir::ImplItem) {
         debug!("visit_impl_item: {:?}", impl_item);
         let def_id = self.tcx.hir().local_def_id_from_hir_id(impl_item.hir_id);
         self.tcx.ensure().check_impl_item_well_formed(def_id);

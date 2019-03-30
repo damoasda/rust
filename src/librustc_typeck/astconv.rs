@@ -4,7 +4,7 @@
 
 use errors::{Applicability, DiagnosticId};
 use crate::hir::{self, GenericArg, GenericArgs, ExprKind};
-use crate::hir::def::Def;
+use crate::hir::def::{CtorOf, Def};
 use crate::hir::def_id::DefId;
 use crate::hir::HirVec;
 use crate::lint;
@@ -12,7 +12,7 @@ use crate::middle::resolve_lifetime as rl;
 use crate::namespace::Namespace;
 use rustc::lint::builtin::AMBIGUOUS_ASSOCIATED_ITEMS;
 use rustc::traits;
-use rustc::ty::{self, Ty, TyCtxt, ToPredicate, TypeFoldable};
+use rustc::ty::{self, DefIdTree, Ty, TyCtxt, ToPredicate, TypeFoldable};
 use rustc::ty::{GenericParamDef, GenericParamDefKind};
 use rustc::ty::subst::{Kind, Subst, InternalSubsts, SubstsRef};
 use rustc::ty::wf::object_region_bounds;
@@ -922,7 +922,7 @@ impl<'o, 'gcx: 'tcx, 'tcx> dyn AstConv<'gcx, 'tcx> + 'o {
                                      "the value of the associated type `{}` (from the trait `{}`) \
                                       is already specified",
                                      binding.item_name,
-                                     tcx.item_path_str(assoc_ty.container.id()))
+                                     tcx.def_path_str(assoc_ty.container.id()))
                         .span_label(binding.span, "re-bound here")
                         .span_label(*prev_span, format!("`{}` bound here first", binding.item_name))
                         .emit();
@@ -959,7 +959,9 @@ impl<'o, 'gcx: 'tcx, 'tcx> dyn AstConv<'gcx, 'tcx> + 'o {
     /// removing the dummy `Self` type (`TRAIT_OBJECT_DUMMY_SELF`).
     fn trait_ref_to_existential(&self, trait_ref: ty::TraitRef<'tcx>)
                                 -> ty::ExistentialTraitRef<'tcx> {
-        assert_eq!(trait_ref.self_ty().sty, TRAIT_OBJECT_DUMMY_SELF);
+        if trait_ref.self_ty().sty != TRAIT_OBJECT_DUMMY_SELF {
+            bug!("trait_ref_to_existential called on {:?} with non-dummy Self", trait_ref);
+        }
         ty::ExistentialTraitRef::erase_self_ty(self.tcx(), trait_ref)
     }
 
@@ -1010,9 +1012,8 @@ impl<'o, 'gcx: 'tcx, 'tcx> dyn AstConv<'gcx, 'tcx> + 'o {
         let object_safety_violations =
             tcx.global_tcx().astconv_object_safety_violations(principal.def_id());
         if !object_safety_violations.is_empty() {
-            tcx.report_object_safety_error(
-                span, principal.def_id(), object_safety_violations)
-               .emit();
+            tcx.report_object_safety_error(span, principal.def_id(), object_safety_violations)
+                .map(|mut err| err.emit());
             return tcx.types.err;
         }
 
@@ -1069,7 +1070,7 @@ impl<'o, 'gcx: 'tcx, 'tcx> dyn AstConv<'gcx, 'tcx> + 'o {
                 format!(
                     "`{}` (from the trait `{}`)",
                     assoc_item.ident,
-                    tcx.item_path_str(trait_def_id),
+                    tcx.def_path_str(trait_def_id),
                 )
             }).collect::<Vec<_>>().join(", ");
             let mut err = struct_span_err!(
@@ -1317,10 +1318,10 @@ impl<'o, 'gcx: 'tcx, 'tcx> dyn AstConv<'gcx, 'tcx> + 'o {
                     tcx.hygienic_eq(assoc_ident, vd.ident, adt_def.did)
                 });
                 if let Some(variant_def) = variant_def {
-                    let def = Def::Variant(variant_def.did);
+                    let def = Def::Variant(variant_def.def_id);
                     if permit_variants {
                         check_type_alias_enum_variants_enabled(tcx, span);
-                        tcx.check_stability(variant_def.did, Some(hir_ref_id), span);
+                        tcx.check_stability(variant_def.def_id, Some(hir_ref_id), span);
                         return (qself_ty, def);
                     } else {
                         variant_resolution = Some(def);
@@ -1450,14 +1451,14 @@ impl<'o, 'gcx: 'tcx, 'tcx> dyn AstConv<'gcx, 'tcx> + 'o {
                    -> Ty<'tcx>
     {
         let tcx = self.tcx();
-        let trait_def_id = tcx.parent_def_id(item_def_id).unwrap();
+        let trait_def_id = tcx.parent(item_def_id).unwrap();
 
         self.prohibit_generics(slice::from_ref(item_segment));
 
         let self_ty = if let Some(ty) = opt_self_ty {
             ty
         } else {
-            let path_str = tcx.item_path_str(trait_def_id);
+            let path_str = tcx.def_path_str(trait_def_id);
             self.report_ambiguous_associated_type(span,
                                                   "Type",
                                                   &path_str,
@@ -1484,37 +1485,34 @@ impl<'o, 'gcx: 'tcx, 'tcx> dyn AstConv<'gcx, 'tcx> + 'o {
             segment.with_generic_args(|generic_args| {
                 let (mut err_for_lt, mut err_for_ty, mut err_for_ct) = (false, false, false);
                 for arg in &generic_args.args {
-                    let (mut span_err, span, kind) = match arg {
-                        // FIXME(varkor): unify E0109, E0110 and E0111.
+                    let (span, kind) = match arg {
                         hir::GenericArg::Lifetime(lt) => {
                             if err_for_lt { continue }
                             err_for_lt = true;
                             has_err = true;
-                            (struct_span_err!(self.tcx().sess, lt.span, E0110,
-                                              "lifetime arguments are not allowed on this entity"),
-                             lt.span,
-                             "lifetime")
+                            (lt.span, "lifetime")
                         }
                         hir::GenericArg::Type(ty) => {
                             if err_for_ty { continue }
                             err_for_ty = true;
                             has_err = true;
-                            (struct_span_err!(self.tcx().sess, ty.span, E0109,
-                                              "type arguments are not allowed on this entity"),
-                             ty.span,
-                             "type")
+                            (ty.span, "type")
                         }
                         hir::GenericArg::Const(ct) => {
                             if err_for_ct { continue }
                             err_for_ct = true;
-                            (struct_span_err!(self.tcx().sess, ct.span, E0111,
-                                              "const parameters are not allowed on this type"),
-                             ct.span,
-                             "const")
+                            (ct.span, "const")
                         }
                     };
-                    span_err.span_label(span, format!("{} argument not allowed", kind))
-                            .emit();
+                    let mut err = struct_span_err!(
+                        self.tcx().sess,
+                        span,
+                        E0109,
+                        "{} arguments are not allowed for this type",
+                        kind,
+                    );
+                    err.span_label(span, format!("{} argument not allowed", kind));
+                    err.emit();
                     if err_for_lt && err_for_ty && err_for_ct {
                         break;
                     }
@@ -1598,7 +1596,7 @@ impl<'o, 'gcx: 'tcx, 'tcx> dyn AstConv<'gcx, 'tcx> + 'o {
 
         match def {
             // Case 1. Reference to a struct constructor.
-            Def::StructCtor(def_id, ..) |
+            Def::Ctor(def_id, CtorOf::Struct, ..) |
             Def::SelfCtor(.., def_id) => {
                 // Everything but the final segment should have no
                 // parameters at all.
@@ -1610,8 +1608,7 @@ impl<'o, 'gcx: 'tcx, 'tcx> dyn AstConv<'gcx, 'tcx> + 'o {
             }
 
             // Case 2. Reference to a variant constructor.
-            Def::Variant(def_id) |
-            Def::VariantCtor(def_id, ..) => {
+            Def::Ctor(def_id, CtorOf::Variant, ..) | Def::Variant(def_id, ..) => {
                 let adt_def = self_ty.map(|t| t.ty_adt_def().unwrap());
                 let (generics_def_id, index) = if let Some(adt_def) = adt_def {
                     debug_assert!(adt_def.is_enum());
@@ -1619,7 +1616,15 @@ impl<'o, 'gcx: 'tcx, 'tcx> dyn AstConv<'gcx, 'tcx> + 'o {
                 } else if last >= 1 && segments[last - 1].args.is_some() {
                     // Everything but the penultimate segment should have no
                     // parameters at all.
-                    let enum_def_id = tcx.parent_def_id(def_id).unwrap();
+                    let mut def_id = def_id;
+
+                    // `Def::Ctor` -> `Def::Variant`
+                    if let Def::Ctor(..) = def {
+                        def_id = tcx.parent(def_id).unwrap()
+                    }
+
+                    // `Def::Variant` -> `Def::Item` (enum)
+                    let enum_def_id = tcx.parent(def_id).unwrap();
                     (enum_def_id, last - 1)
                 } else {
                     // FIXME: lint here recommending `Enum::<...>::Variant` form
@@ -1812,7 +1817,7 @@ impl<'o, 'gcx: 'tcx, 'tcx> dyn AstConv<'gcx, 'tcx> + 'o {
                 self.def_to_ty(opt_self_ty, path, false)
             }
             hir::TyKind::Def(item_id, ref lifetimes) => {
-                let did = tcx.hir().local_def_id(item_id.id);
+                let did = tcx.hir().local_def_id_from_hir_id(item_id.id);
                 self.impl_trait_ty_to_ty(did, lifetimes)
             },
             hir::TyKind::Path(hir::QPath::TypeRelative(ref qself, ref segment)) => {
@@ -1868,16 +1873,19 @@ impl<'o, 'gcx: 'tcx, 'tcx> dyn AstConv<'gcx, 'tcx> + 'o {
         &self,
         ast_const: &hir::AnonConst,
         ty: Ty<'tcx>
-    ) -> &'tcx ty::LazyConst<'tcx> {
+    ) -> &'tcx ty::Const<'tcx> {
         debug!("ast_const_to_const(id={:?}, ast_const={:?})", ast_const.hir_id, ast_const);
 
         let tcx = self.tcx();
         let def_id = tcx.hir().local_def_id_from_hir_id(ast_const.hir_id);
 
-        let mut lazy_const = ty::LazyConst::Unevaluated(
-            def_id,
-            InternalSubsts::identity_for_item(tcx, def_id),
-        );
+        let mut const_ = ty::Const {
+            val: ConstValue::Unevaluated(
+                def_id,
+                InternalSubsts::identity_for_item(tcx, def_id),
+            ),
+            ty,
+        };
 
         let expr = &tcx.hir().body(ast_const.body).value;
         if let ExprKind::Path(ref qpath) = expr.node {
@@ -1889,15 +1897,12 @@ impl<'o, 'gcx: 'tcx, 'tcx> dyn AstConv<'gcx, 'tcx> + 'o {
                     let generics = tcx.generics_of(item_def_id);
                     let index = generics.param_def_id_to_index[&tcx.hir().local_def_id(node_id)];
                     let name = tcx.hir().name(node_id).as_interned_str();
-                    lazy_const = ty::LazyConst::Evaluated(ty::Const {
-                        val: ConstValue::Param(ty::ParamConst::new(index, name)),
-                        ty,
-                    })
+                    const_.val = ConstValue::Param(ty::ParamConst::new(index, name));
                 }
             }
         };
 
-        tcx.mk_lazy_const(lazy_const)
+        tcx.mk_const(const_)
     }
 
     pub fn impl_trait_ty_to_ty(

@@ -3,7 +3,7 @@ use rustc::hir;
 use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::mir::interpret::ConstValue;
 use rustc::session::config::OptLevel;
-use rustc::ty::{self, Ty, TyCtxt, Const, ClosureSubsts, GeneratorSubsts, LazyConst, ParamConst};
+use rustc::ty::{self, Ty, TyCtxt, Const, ClosureSubsts, GeneratorSubsts, ParamConst};
 use rustc::ty::subst::{SubstsRef, InternalSubsts};
 use syntax::ast;
 use syntax::attr::InlineAttr;
@@ -216,9 +216,8 @@ impl<'a, 'tcx> MonoItemExt<'a, 'tcx> for MonoItem<'tcx> {
 // These keys are used by the handwritten auto-tests, so they need to be
 // predictable and human-readable.
 //
-// Note: A lot of this could looks very similar to what's already in the
-//       ppaux module. It would be good to refactor things so we only have one
-//       parameterizable implementation for printing types.
+// Note: A lot of this could looks very similar to what's already in `ty::print`.
+// FIXME(eddyb) implement a custom `PrettyPrinter` for this.
 
 /// Same as `unique_type_name()` but with the result pushed onto the given
 /// `output` parameter.
@@ -396,21 +395,17 @@ impl<'a, 'tcx> DefPathBasedNames<'a, 'tcx> {
     }
 
     // FIXME(const_generics): handle debug printing.
-    pub fn push_const_name(&self, c: &LazyConst<'tcx>, output: &mut String, debug: bool) {
-        match c {
-            LazyConst::Unevaluated(..) => output.push_str("_: _"),
-            LazyConst::Evaluated(Const { ty, val }) => {
-                match val {
-                    ConstValue::Infer(..) => output.push_str("_"),
-                    ConstValue::Param(ParamConst { name, .. }) => {
-                        write!(output, "{}", name).unwrap();
-                    }
-                    _ => write!(output, "{:?}", c).unwrap(),
-                }
-                output.push_str(": ");
-                self.push_type_name(ty, output, debug);
+    pub fn push_const_name(&self, c: &Const<'tcx>, output: &mut String, debug: bool) {
+        match c.val {
+            ConstValue::Infer(..) => output.push_str("_"),
+            ConstValue::Param(ParamConst { name, .. }) => {
+                write!(output, "{}", name).unwrap();
             }
+            ConstValue::Unevaluated(..) => output.push_str("_: _"),
+            _ => write!(output, "{:?}", c).unwrap(),
         }
+        output.push_str(": ");
+        self.push_type_name(c.ty, output, debug);
     }
 
     pub fn push_def_path(&self,

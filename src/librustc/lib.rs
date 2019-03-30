@@ -31,6 +31,7 @@
 #![deny(rust_2018_idioms)]
 #![allow(explicit_outlives_requirements)]
 
+#![feature(arbitrary_self_types)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(core_intrinsics)]
@@ -43,6 +44,7 @@
 #![feature(non_exhaustive)]
 #![feature(proc_macro_internals)]
 #![feature(optin_builtin_traits)]
+#![feature(range_is_empty)]
 #![feature(refcell_replace_swap)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_attrs)]
@@ -59,6 +61,8 @@
 #![feature(test)]
 #![feature(in_band_lifetimes)]
 #![feature(crate_visibility_modifier)]
+#![feature(proc_macro_hygiene)]
+#![feature(log_syntax)]
 
 #![recursion_limit="512"]
 
@@ -68,6 +72,7 @@ extern crate getopts;
 #[macro_use] extern crate scoped_tls;
 #[cfg(windows)]
 extern crate libc;
+#[macro_use] extern crate rustc_macros;
 #[macro_use] extern crate rustc_data_structures;
 
 #[macro_use] extern crate log;
@@ -94,6 +99,9 @@ mod macros;
 // N.B., this module needs to be declared first so diagnostics are
 // registered before they are used.
 pub mod diagnostics;
+
+#[macro_use]
+pub mod query;
 
 pub mod cfg;
 pub mod dep_graph;
@@ -134,9 +142,7 @@ pub mod ty;
 pub mod util {
     pub mod captures;
     pub mod common;
-    pub mod ppaux;
     pub mod nodemap;
-    pub mod time_graph;
     pub mod profiling;
     pub mod bug;
 }

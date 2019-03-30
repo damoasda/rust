@@ -153,7 +153,7 @@ impl Forest {
         &self.krate
     }
 
-    /// This is internally in the depedency tracking system.
+    /// This is used internally in the dependency tracking system.
     /// Use the `krate` method to ensure your dependency on the
     /// crate is tracked.
     pub fn untracked_krate<'hir>(&'hir self) -> &'hir Crate {
@@ -366,12 +366,18 @@ impl<'hir> Map<'hir> {
                 }
             }
             Node::Variant(variant) => {
-                let def_id = self.local_def_id_from_hir_id(variant.node.data.hir_id());
+                let def_id = self.local_def_id_from_hir_id(variant.node.id);
                 Some(Def::Variant(def_id))
             }
-            Node::StructCtor(variant) => {
-                let def_id = self.local_def_id_from_hir_id(variant.hir_id());
-                Some(Def::StructCtor(def_id, def::CtorKind::from_hir(variant)))
+            Node::Ctor(variant_data) => {
+                let ctor_of = match self.find(self.get_parent_node(node_id)) {
+                    Some(Node::Item(..)) => def::CtorOf::Struct,
+                    Some(Node::Variant(..)) => def::CtorOf::Variant,
+                    _ => unreachable!(),
+                };
+                variant_data.ctor_hir_id()
+                    .map(|hir_id| self.local_def_id_from_hir_id(hir_id))
+                    .map(|def_id| Def::Ctor(def_id, ctor_of, def::CtorKind::from_hir(variant_data)))
             }
             Node::AnonConst(_) |
             Node::Field(_) |
@@ -516,8 +522,7 @@ impl<'hir> Map<'hir> {
             Node::AnonConst(_) => {
                 BodyOwnerKind::Const
             }
-            Node::Variant(&Spanned { node: VariantKind { data: VariantData::Tuple(..), .. }, .. }) |
-            Node::StructCtor(..) |
+            Node::Ctor(..) |
             Node::Item(&Item { node: ItemKind::Fn(..), .. }) |
             Node::TraitItem(&TraitItem { node: TraitItemKind::Method(..), .. }) |
             Node::ImplItem(&ImplItem { node: ImplItemKind::Method(..), .. }) => {
@@ -541,7 +546,8 @@ impl<'hir> Map<'hir> {
 
     pub fn ty_param_owner(&self, id: HirId) -> HirId {
         match self.get_by_hir_id(id) {
-            Node::Item(&Item { node: ItemKind::Trait(..), .. }) => id,
+            Node::Item(&Item { node: ItemKind::Trait(..), .. }) |
+            Node::Item(&Item { node: ItemKind::TraitAlias(..), .. }) => id,
             Node::GenericParam(_) => self.get_parent_node_by_hir_id(id),
             _ => bug!("ty_param_owner: {} not a type parameter", self.hir_to_string(id))
         }
@@ -549,30 +555,19 @@ impl<'hir> Map<'hir> {
 
     pub fn ty_param_name(&self, id: HirId) -> Name {
         match self.get_by_hir_id(id) {
-            Node::Item(&Item { node: ItemKind::Trait(..), .. }) => keywords::SelfUpper.name(),
+            Node::Item(&Item { node: ItemKind::Trait(..), .. }) |
+            Node::Item(&Item { node: ItemKind::TraitAlias(..), .. }) => keywords::SelfUpper.name(),
             Node::GenericParam(param) => param.name.ident().name,
             _ => bug!("ty_param_name: {} not a type parameter", self.hir_to_string(id)),
         }
     }
 
-    pub fn trait_impls(&self, trait_did: DefId) -> &'hir [NodeId] {
+    pub fn trait_impls(&self, trait_did: DefId) -> &'hir [HirId] {
         self.dep_graph.read(DepNode::new_no_params(DepKind::AllLocalTraitImpls));
 
         // N.B., intentionally bypass `self.forest.krate()` so that we
         // do not trigger a read of the whole krate here
         self.forest.krate.trait_impls.get(&trait_did).map_or(&[], |xs| &xs[..])
-    }
-
-    pub fn trait_auto_impl(&self, trait_did: DefId) -> Option<NodeId> {
-        self.dep_graph.read(DepNode::new_no_params(DepKind::AllLocalTraitImpls));
-
-        // N.B., intentionally bypass `self.forest.krate()` so that we
-        // do not trigger a read of the whole krate here
-        self.forest.krate.trait_auto_impl.get(&trait_did).cloned()
-    }
-
-    pub fn trait_is_auto(&self, trait_did: DefId) -> bool {
-        self.trait_auto_impl(trait_did).is_some()
     }
 
     /// Gets the attributes on the crate. This is preferable to
@@ -585,17 +580,17 @@ impl<'hir> Map<'hir> {
         &self.forest.krate.attrs
     }
 
-    pub fn get_module(&self, module: DefId) -> (&'hir Mod, Span, NodeId)
-    {
+    pub fn get_module(&self, module: DefId) -> (&'hir Mod, Span, HirId) {
         let node_id = self.as_local_node_id(module).unwrap();
+        let hir_id = self.node_to_hir_id(node_id);
         self.read(node_id);
         match self.find_entry(node_id).unwrap().node {
             Node::Item(&Item {
                 span,
                 node: ItemKind::Mod(ref m),
                 ..
-            }) => (m, span, node_id),
-            Node::Crate => (&self.forest.krate.module, self.forest.krate.span, node_id),
+            }) => (m, span, hir_id),
+            Node::Crate => (&self.forest.krate.module, self.forest.krate.span, hir_id),
             _ => panic!("not a module")
         }
     }
@@ -614,7 +609,7 @@ impl<'hir> Map<'hir> {
         let module = &self.forest.krate.modules[&node_id];
 
         for id in &module.items {
-            visitor.visit_item(self.expect_item(*id));
+            visitor.visit_item(self.expect_item_by_hir_id(*id));
         }
 
         for id in &module.trait_items {
@@ -958,8 +953,8 @@ impl<'hir> Map<'hir> {
                     _ => bug!("struct ID bound to non-struct {}", self.hir_to_string(id))
                 }
             }
-            Some(Node::StructCtor(data)) => data,
             Some(Node::Variant(variant)) => &variant.node.data,
+            Some(Node::Ctor(data)) => data,
             _ => bug!("expected struct or variant, found {}", self.hir_to_string(id))
         }
     }
@@ -1003,7 +998,7 @@ impl<'hir> Map<'hir> {
             Node::Lifetime(lt) => lt.name.ident().name,
             Node::GenericParam(param) => param.name.ident().name,
             Node::Binding(&Pat { node: PatKind::Binding(_, _, l, _), .. }) => l.name,
-            Node::StructCtor(_) => self.name(self.get_parent(id)),
+            Node::Ctor(..) => self.name(self.get_parent(id)),
             _ => bug!("no name for {}", self.node_to_string(id))
         }
     }
@@ -1018,7 +1013,8 @@ impl<'hir> Map<'hir> {
     /// corresponding to the Node ID
     pub fn attrs(&self, id: NodeId) -> &'hir [ast::Attribute] {
         self.read(id); // reveals attributes on the node
-        let attrs = match self.find(id) {
+        let attrs = match self.find_entry(id).map(|entry| entry.node) {
+            Some(Node::Local(l)) => Some(&l.attrs[..]),
             Some(Node::Item(i)) => Some(&i.attrs[..]),
             Some(Node::ForeignItem(fi)) => Some(&fi.attrs[..]),
             Some(Node::TraitItem(ref ti)) => Some(&ti.attrs[..]),
@@ -1028,9 +1024,10 @@ impl<'hir> Map<'hir> {
             Some(Node::Expr(ref e)) => Some(&*e.attrs),
             Some(Node::Stmt(ref s)) => Some(s.node.attrs()),
             Some(Node::GenericParam(param)) => Some(&param.attrs[..]),
-            // unit/tuple structs take the attributes straight from
-            // the struct definition.
-            Some(Node::StructCtor(_)) => return self.attrs(self.get_parent(id)),
+            // Unit/tuple structs/variants take the attributes straight from
+            // the struct/variant definition.
+            Some(Node::Ctor(..)) => return self.attrs(self.get_parent(id)),
+            Some(Node::Crate) => Some(&self.forest.krate.attrs[..]),
             _ => None
         };
         attrs.unwrap_or(&[])
@@ -1077,7 +1074,11 @@ impl<'hir> Map<'hir> {
             Some(Node::Binding(pat)) => pat.span,
             Some(Node::Pat(pat)) => pat.span,
             Some(Node::Block(block)) => block.span,
-            Some(Node::StructCtor(_)) => self.expect_item(self.get_parent(id)).span,
+            Some(Node::Ctor(..)) => match self.find(self.get_parent_node(id)) {
+                Some(Node::Item(item)) => item.span,
+                Some(Node::Variant(variant)) => variant.span,
+                _ => unreachable!(),
+            }
             Some(Node::Lifetime(lifetime)) => lifetime.span,
             Some(Node::GenericParam(param)) => param.span,
             Some(Node::Visibility(&Spanned {
@@ -1292,7 +1293,7 @@ pub fn map_crate<'hir>(sess: &crate::session::Session,
 impl<'hir> print::PpAnn for Map<'hir> {
     fn nested(&self, state: &mut print::State<'_>, nested: print::Nested) -> io::Result<()> {
         match nested {
-            Nested::Item(id) => state.print_item(self.expect_item(id.id)),
+            Nested::Item(id) => state.print_item(self.expect_item_by_hir_id(id.id)),
             Nested::TraitItem(id) => state.print_trait_item(self.trait_item(id)),
             Nested::ImplItem(id) => state.print_impl_item(self.impl_item(id)),
             Nested::Body(id) => state.print_expr(&self.body(id).value),
@@ -1333,7 +1334,7 @@ impl<'a> print::State<'a> {
             // these cases do not carry enough information in the
             // hir_map to reconstruct their full structure for pretty
             // printing.
-            Node::StructCtor(_)   => bug!("cannot print isolated StructCtor"),
+            Node::Ctor(..)        => bug!("cannot print isolated Ctor"),
             Node::Local(a)        => self.print_local_decl(&a),
             Node::MacroDef(_)     => bug!("cannot print MacroDef"),
             Node::Crate           => bug!("cannot print Crate"),
@@ -1350,7 +1351,8 @@ fn node_id_to_string(map: &Map<'_>, id: NodeId, include_id: bool) -> String {
         // the user-friendly path, otherwise fall back to stringifying DefPath.
         crate::ty::tls::with_opt(|tcx| {
             if let Some(tcx) = tcx {
-                tcx.node_path_str(id)
+                let def_id = map.local_def_id(id);
+                tcx.def_path_str(def_id)
             } else if let Some(path) = map.def_path_from_id(id) {
                 path.data.into_iter().map(|elem| {
                     elem.data.to_string()
@@ -1451,8 +1453,8 @@ fn node_id_to_string(map: &Map<'_>, id: NodeId, include_id: bool) -> String {
         Some(Node::Local(_)) => {
             format!("local {}{}", map.node_to_pretty_string(id), id_str)
         }
-        Some(Node::StructCtor(_)) => {
-            format!("struct_ctor {}{}", path_str(), id_str)
+        Some(Node::Ctor(..)) => {
+            format!("ctor {}{}", path_str(), id_str)
         }
         Some(Node::Lifetime(_)) => {
             format!("lifetime {}{}", map.node_to_pretty_string(id), id_str)

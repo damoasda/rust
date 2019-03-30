@@ -7,7 +7,7 @@ use crate::hir::{self, Node};
 use crate::mir::interpret::{sign_extend, truncate};
 use crate::ich::NodeIdHashingMode;
 use crate::traits::{self, ObligationCause};
-use crate::ty::{self, Ty, TyCtxt, GenericParamDefKind, TypeFoldable};
+use crate::ty::{self, DefIdTree, Ty, TyCtxt, GenericParamDefKind, TypeFoldable};
 use crate::ty::subst::{Subst, InternalSubsts, SubstsRef, UnpackedKind};
 use crate::ty::query::TyCtxtAt;
 use crate::ty::TyKind::*;
@@ -18,6 +18,7 @@ use crate::middle::lang_items;
 
 use rustc_data_structures::stable_hasher::{StableHasher, HashStable};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_macros::HashStable;
 use std::{cmp, fmt};
 use syntax::ast;
 use syntax::attr::{self, SignedInt, UnsignedInt};
@@ -496,10 +497,10 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                     }) => {
                         !impl_generics.type_param(pt, self).pure_wrt_drop
                     }
-                    UnpackedKind::Const(&ty::LazyConst::Evaluated(ty::Const {
+                    UnpackedKind::Const(&ty::Const {
                         val: ConstValue::Param(ref pc),
                         ..
-                    })) => {
+                    }) => {
                         !impl_generics.const_param(pc, self).pure_wrt_drop
                     }
                     UnpackedKind::Lifetime(_) |
@@ -548,8 +549,8 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 
     /// Returns `true` if this `DefId` refers to the implicit constructor for
     /// a tuple struct like `struct Foo(u32)`, and `false` otherwise.
-    pub fn is_struct_constructor(self, def_id: DefId) -> bool {
-        self.def_key(def_id).disambiguated_data.data == DefPathData::StructCtor
+    pub fn is_constructor(self, def_id: DefId) -> bool {
+        self.def_key(def_id).disambiguated_data.data == DefPathData::Ctor
     }
 
     /// Given the `DefId` of a fn or closure, returns the `DefId` of
@@ -562,7 +563,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     pub fn closure_base_def_id(self, def_id: DefId) -> DefId {
         let mut def_id = def_id;
         while self.is_closure(def_id) {
-            def_id = self.parent_def_id(def_id).unwrap_or_else(|| {
+            def_id = self.parent(def_id).unwrap_or_else(|| {
                 bug!("closure {:?} has no parent", def_id);
             });
         }
@@ -1005,7 +1006,7 @@ fn is_freeze_raw<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         ))
 }
 
-#[derive(Clone)]
+#[derive(Clone, HashStable)]
 pub struct NeedsDrop(pub bool);
 
 fn needs_drop_raw<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,

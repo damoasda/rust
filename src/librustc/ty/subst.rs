@@ -9,10 +9,11 @@ use crate::mir::interpret::ConstValue;
 use serialize::{self, Encodable, Encoder, Decodable, Decoder};
 use syntax_pos::{Span, DUMMY_SP};
 use smallvec::SmallVec;
+use rustc_macros::HashStable;
 
 use core::intrinsics;
-use std::cmp::Ordering;
 use std::fmt;
+use std::cmp::Ordering;
 use std::marker::PhantomData;
 use std::mem;
 use std::num::NonZeroUsize;
@@ -25,7 +26,7 @@ use std::num::NonZeroUsize;
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Kind<'tcx> {
     ptr: NonZeroUsize,
-    marker: PhantomData<(Ty<'tcx>, ty::Region<'tcx>, &'tcx ty::LazyConst<'tcx>)>
+    marker: PhantomData<(Ty<'tcx>, ty::Region<'tcx>, &'tcx ty::Const<'tcx>)>
 }
 
 const TAG_MASK: usize = 0b11;
@@ -33,11 +34,11 @@ const TYPE_TAG: usize = 0b00;
 const REGION_TAG: usize = 0b01;
 const CONST_TAG: usize = 0b10;
 
-#[derive(Debug, RustcEncodable, RustcDecodable, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, RustcEncodable, RustcDecodable, PartialEq, Eq, PartialOrd, Ord, HashStable)]
 pub enum UnpackedKind<'tcx> {
     Lifetime(ty::Region<'tcx>),
     Type(Ty<'tcx>),
-    Const(&'tcx ty::LazyConst<'tcx>),
+    Const(&'tcx ty::Const<'tcx>),
 }
 
 impl<'tcx> UnpackedKind<'tcx> {
@@ -69,6 +70,16 @@ impl<'tcx> UnpackedKind<'tcx> {
     }
 }
 
+impl fmt::Debug for Kind<'tcx> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.unpack() {
+            UnpackedKind::Lifetime(lt) => lt.fmt(f),
+            UnpackedKind::Type(ty) => ty.fmt(f),
+            UnpackedKind::Const(ct) => ct.fmt(f),
+        }
+    }
+}
+
 impl<'tcx> Ord for Kind<'tcx> {
     fn cmp(&self, other: &Kind<'_>) -> Ordering {
         self.unpack().cmp(&other.unpack())
@@ -93,8 +104,8 @@ impl<'tcx> From<Ty<'tcx>> for Kind<'tcx> {
     }
 }
 
-impl<'tcx> From<&'tcx ty::LazyConst<'tcx>> for Kind<'tcx> {
-    fn from(c: &'tcx ty::LazyConst<'tcx>) -> Kind<'tcx> {
+impl<'tcx> From<&'tcx ty::Const<'tcx>> for Kind<'tcx> {
+    fn from(c: &'tcx ty::Const<'tcx>) -> Kind<'tcx> {
         UnpackedKind::Const(c).pack()
     }
 }
@@ -114,34 +125,14 @@ impl<'tcx> Kind<'tcx> {
     }
 }
 
-impl<'tcx> fmt::Debug for Kind<'tcx> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.unpack() {
-            UnpackedKind::Lifetime(lt) => write!(f, "{:?}", lt),
-            UnpackedKind::Type(ty) => write!(f, "{:?}", ty),
-            UnpackedKind::Const(ct) => write!(f, "{:?}", ct),
-        }
-    }
-}
-
-impl<'tcx> fmt::Display for Kind<'tcx> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.unpack() {
-            UnpackedKind::Lifetime(lt) => write!(f, "{}", lt),
-            UnpackedKind::Type(ty) => write!(f, "{}", ty),
-            UnpackedKind::Const(ct) => write!(f, "{}", ct),
-        }
-    }
-}
-
 impl<'a, 'tcx> Lift<'tcx> for Kind<'a> {
     type Lifted = Kind<'tcx>;
 
     fn lift_to_tcx<'cx, 'gcx>(&self, tcx: TyCtxt<'cx, 'gcx, 'tcx>) -> Option<Self::Lifted> {
         match self.unpack() {
-            UnpackedKind::Lifetime(lt) => lt.lift_to_tcx(tcx).map(|lt| lt.into()),
-            UnpackedKind::Type(ty) => ty.lift_to_tcx(tcx).map(|ty| ty.into()),
-            UnpackedKind::Const(ct) => ct.lift_to_tcx(tcx).map(|ct| ct.into()),
+            UnpackedKind::Lifetime(lt) => tcx.lift(&lt).map(|lt| lt.into()),
+            UnpackedKind::Type(ty) => tcx.lift(&ty).map(|ty| ty.into()),
+            UnpackedKind::Const(ct) => tcx.lift(&ct).map(|ct| ct.into()),
         }
     }
 }
@@ -217,12 +208,12 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
                 }
 
                 ty::GenericParamDefKind::Const => {
-                    tcx.mk_lazy_const(ty::LazyConst::Evaluated(ty::Const {
+                    tcx.mk_const(ty::Const {
                         val: ConstValue::Infer(
                             InferConst::Canonical(ty::INNERMOST, ty::BoundVar::from(param.index))
                         ),
                         ty: tcx.type_of(def_id),
-                    })).into()
+                    }).into()
                 }
             }
         })
@@ -313,7 +304,7 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
     }
 
     #[inline]
-    pub fn consts(&'a self) -> impl DoubleEndedIterator<Item = &'tcx ty::LazyConst<'tcx>> + 'a {
+    pub fn consts(&'a self) -> impl DoubleEndedIterator<Item = &'tcx ty::Const<'tcx>> + 'a {
         self.iter().filter_map(|k| {
             if let UnpackedKind::Const(ct) = k.unpack() {
                 Some(ct)
@@ -354,7 +345,7 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
     }
 
     #[inline]
-    pub fn const_at(&self, i: usize) -> &'tcx ty::LazyConst<'tcx> {
+    pub fn const_at(&self, i: usize) -> &'tcx ty::Const<'tcx> {
         if let UnpackedKind::Const(ct) = self[i].unpack() {
             ct
         } else {
@@ -531,16 +522,13 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for SubstFolder<'a, 'gcx, 'tcx> {
         return t1;
     }
 
-    fn fold_const(&mut self, c: &'tcx ty::LazyConst<'tcx>) -> &'tcx ty::LazyConst<'tcx> {
+    fn fold_const(&mut self, c: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
         if !c.needs_subst() {
             return c;
         }
 
-        if let ty::LazyConst::Evaluated(ty::Const {
-            val: ConstValue::Param(p),
-            ..
-        }) = c {
-            self.const_for_param(*p, c)
+        if let ConstValue::Param(p) = c.val {
+            self.const_for_param(p, c)
         } else {
             c.super_fold_with(self)
         }
@@ -573,8 +561,8 @@ impl<'a, 'gcx, 'tcx> SubstFolder<'a, 'gcx, 'tcx> {
     fn const_for_param(
         &self,
         p: ParamConst,
-        source_cn: &'tcx ty::LazyConst<'tcx>
-    ) -> &'tcx ty::LazyConst<'tcx> {
+        source_cn: &'tcx ty::Const<'tcx>
+    ) -> &'tcx ty::Const<'tcx> {
         // Look up the const in the substitutions. It really should be in there.
         let opt_cn = self.substs.get(p.index as usize).map(|k| k.unpack());
         let cn = match opt_cn {
@@ -666,7 +654,7 @@ pub type CanonicalUserSubsts<'tcx> = Canonical<'tcx, UserSubsts<'tcx>>;
 
 /// Stores the user-given substs to reach some fully qualified path
 /// (e.g., `<T>::Item` or `<T as Trait>::Item`).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, HashStable)]
 pub struct UserSubsts<'tcx> {
     /// The substitutions for the item as given by the user.
     pub substs: SubstsRef<'tcx>,
@@ -707,7 +695,7 @@ BraceStructLiftImpl! {
 /// the impl (with the substs from `UserSubsts`) and apply those to
 /// the self type, giving `Foo<?A>`. Finally, we unify that with
 /// the self type here, which contains `?A` to be `&'static u32`
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, HashStable)]
 pub struct UserSelfTy<'tcx> {
     pub impl_def_id: DefId,
     pub self_ty: Ty<'tcx>,

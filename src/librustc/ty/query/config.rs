@@ -34,7 +34,7 @@ pub trait QueryConfig<'tcx> {
     type Value: Clone;
 }
 
-pub(super) trait QueryAccessors<'tcx>: QueryConfig<'tcx> {
+pub(crate) trait QueryAccessors<'tcx>: QueryConfig<'tcx> {
     fn query(key: Self::Key) -> Query<'tcx>;
 
     // Don't use this method to access query results, instead use the methods on TyCtxt
@@ -53,7 +53,7 @@ pub(super) trait QueryAccessors<'tcx>: QueryConfig<'tcx> {
     fn handle_cycle_error(tcx: TyCtxt<'_, 'tcx, '_>, error: CycleError<'tcx>) -> Self::Value;
 }
 
-pub(super) trait QueryDescription<'tcx>: QueryAccessors<'tcx> {
+pub(crate) trait QueryDescription<'tcx>: QueryAccessors<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, key: Self::Key) -> Cow<'static, str>;
 
     #[inline]
@@ -71,7 +71,7 @@ pub(super) trait QueryDescription<'tcx>: QueryAccessors<'tcx> {
 impl<'tcx, M: QueryAccessors<'tcx, Key=DefId>> QueryDescription<'tcx> for M {
     default fn describe(tcx: TyCtxt<'_, '_, '_>, def_id: DefId) -> Cow<'static, str> {
         if !tcx.sess.verbose() {
-            format!("processing `{}`", tcx.item_path_str(def_id)).into()
+            format!("processing `{}`", tcx.def_path_str(def_id)).into()
         } else {
             let name = unsafe { ::std::intrinsics::type_name::<M>() };
             format!("processing {:?} with query `{}`", def_id, name).into()
@@ -301,13 +301,7 @@ impl<'tcx> QueryDescription<'tcx> for queries::layout_raw<'tcx> {
 impl<'tcx> QueryDescription<'tcx> for queries::super_predicates_of<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, def_id: DefId) -> Cow<'static, str> {
         format!("computing the supertraits of `{}`",
-                tcx.item_path_str(def_id)).into()
-    }
-}
-
-impl<'tcx> QueryDescription<'tcx> for queries::erase_regions_ty<'tcx> {
-    fn describe(_tcx: TyCtxt<'_, '_, '_>, ty: Ty<'tcx>) -> Cow<'static, str> {
-        format!("erasing regions from `{:?}`", ty).into()
+                tcx.def_path_str(def_id)).into()
     }
 }
 
@@ -322,7 +316,7 @@ impl<'tcx> QueryDescription<'tcx> for queries::type_param_predicates<'tcx> {
 impl<'tcx> QueryDescription<'tcx> for queries::coherent_trait<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, def_id: DefId) -> Cow<'static, str> {
         format!("coherence checking all impls of trait `{}`",
-                tcx.item_path_str(def_id)).into()
+                tcx.def_path_str(def_id)).into()
     }
 }
 
@@ -359,13 +353,19 @@ impl<'tcx> QueryDescription<'tcx> for queries::inferred_outlives_crate<'tcx> {
 impl<'tcx> QueryDescription<'tcx> for queries::mir_shims<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, def: ty::InstanceDef<'tcx>) -> Cow<'static, str> {
         format!("generating MIR shim for `{}`",
-                tcx.item_path_str(def.def_id())).into()
+                tcx.def_path_str(def.def_id())).into()
     }
 }
 
 impl<'tcx> QueryDescription<'tcx> for queries::privacy_access_levels<'tcx> {
     fn describe(_: TyCtxt<'_, '_, '_>, _: CrateNum) -> Cow<'static, str> {
         "privacy access levels".into()
+    }
+}
+
+impl<'tcx> QueryDescription<'tcx> for queries::check_private_in_public<'tcx> {
+    fn describe(_: TyCtxt<'_, '_, '_>, _: CrateNum) -> Cow<'static, str> {
+        "checking for private elements in public interfaces".into()
     }
 }
 
@@ -388,7 +388,7 @@ impl<'tcx> QueryDescription<'tcx> for queries::const_eval<'tcx> {
     ) -> Cow<'static, str> {
         format!(
             "const-evaluating + checking `{}`",
-            tcx.item_path_str(key.value.instance.def.def_id()),
+            tcx.def_path_str(key.value.instance.def.def_id()),
         ).into()
     }
 
@@ -409,7 +409,7 @@ impl<'tcx> QueryDescription<'tcx> for queries::const_eval_raw<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, key: ty::ParamEnvAnd<'tcx, GlobalId<'tcx>>)
         -> Cow<'static, str>
     {
-        format!("const-evaluating `{}`", tcx.item_path_str(key.value.instance.def.def_id())).into()
+        format!("const-evaluating `{}`", tcx.def_path_str(key.value.instance.def.def_id())).into()
     }
 
     #[inline]
@@ -422,12 +422,6 @@ impl<'tcx> QueryDescription<'tcx> for queries::const_eval_raw<'tcx> {
                               id: SerializedDepNodeIndex)
                               -> Option<Self::Value> {
         tcx.queries.on_disk_cache.try_load_query_result(tcx, id).map(Ok)
-    }
-}
-
-impl<'tcx> QueryDescription<'tcx> for queries::mir_keys<'tcx> {
-    fn describe(_: TyCtxt<'_, '_, '_>, _: CrateNum) -> Cow<'static, str> {
-        "getting a list of all mir_keys".into()
     }
 }
 
@@ -507,7 +501,7 @@ impl<'tcx> QueryDescription<'tcx> for queries::trait_of_item<'tcx> {
 impl<'tcx> QueryDescription<'tcx> for queries::const_is_rvalue_promotable_to_static<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, def_id: DefId) -> Cow<'static, str> {
         format!("const checking if rvalue is promotable to static `{}`",
-            tcx.item_path_str(def_id)).into()
+            tcx.def_path_str(def_id)).into()
     }
 
     #[inline]
@@ -526,21 +520,21 @@ impl<'tcx> QueryDescription<'tcx> for queries::const_is_rvalue_promotable_to_sta
 impl<'tcx> QueryDescription<'tcx> for queries::rvalue_promotable_map<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, def_id: DefId) -> Cow<'static, str> {
         format!("checking which parts of `{}` are promotable to static",
-                tcx.item_path_str(def_id)).into()
+                tcx.def_path_str(def_id)).into()
     }
 }
 
 impl<'tcx> QueryDescription<'tcx> for queries::is_mir_available<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, def_id: DefId) -> Cow<'static, str> {
         format!("checking if item is mir available: `{}`",
-                tcx.item_path_str(def_id)).into()
+                tcx.def_path_str(def_id)).into()
     }
 }
 
 impl<'tcx> QueryDescription<'tcx> for queries::codegen_fulfill_obligation<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>,
                 key: (ty::ParamEnv<'tcx>, ty::PolyTraitRef<'tcx>)) -> Cow<'static, str> {
-        format!("checking if `{}` fulfills its obligations", tcx.item_path_str(key.1.def_id()))
+        format!("checking if `{}` fulfills its obligations", tcx.def_path_str(key.1.def_id()))
             .into()
     }
 
@@ -559,31 +553,25 @@ impl<'tcx> QueryDescription<'tcx> for queries::codegen_fulfill_obligation<'tcx> 
 
 impl<'tcx> QueryDescription<'tcx> for queries::trait_impls_of<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, def_id: DefId) -> Cow<'static, str> {
-        format!("trait impls of `{}`", tcx.item_path_str(def_id)).into()
+        format!("trait impls of `{}`", tcx.def_path_str(def_id)).into()
     }
 }
 
 impl<'tcx> QueryDescription<'tcx> for queries::is_object_safe<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, def_id: DefId) -> Cow<'static, str> {
-        format!("determine object safety of trait `{}`", tcx.item_path_str(def_id)).into()
+        format!("determine object safety of trait `{}`", tcx.def_path_str(def_id)).into()
     }
 }
 
 impl<'tcx> QueryDescription<'tcx> for queries::is_const_fn_raw<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, def_id: DefId) -> Cow<'static, str> {
-        format!("checking if item is const fn: `{}`", tcx.item_path_str(def_id)).into()
+        format!("checking if item is const fn: `{}`", tcx.def_path_str(def_id)).into()
     }
 }
 
 impl<'tcx> QueryDescription<'tcx> for queries::dylib_dependency_formats<'tcx> {
     fn describe(_: TyCtxt<'_, '_, '_>, _: CrateNum) -> Cow<'static, str> {
         "dylib dependency formats of crate".into()
-    }
-}
-
-impl<'tcx> QueryDescription<'tcx> for queries::is_panic_runtime<'tcx> {
-    fn describe(_: TyCtxt<'_, '_, '_>, _: CrateNum) -> Cow<'static, str> {
-        "checking if the crate is_panic_runtime".into()
     }
 }
 
@@ -614,12 +602,6 @@ impl<'tcx> QueryDescription<'tcx> for queries::extern_crate<'tcx> {
 impl<'tcx> QueryDescription<'tcx> for queries::analysis<'tcx> {
     fn describe(_tcx: TyCtxt<'_, '_, '_>, _: CrateNum) -> Cow<'static, str> {
         "running analysis passes on this crate".into()
-    }
-}
-
-impl<'tcx> QueryDescription<'tcx> for queries::lint_levels<'tcx> {
-    fn describe(_tcx: TyCtxt<'_, '_, '_>, _: CrateNum) -> Cow<'static, str> {
-        "computing the lint levels for items in this crate".into()
     }
 }
 
@@ -662,12 +644,6 @@ impl<'tcx> QueryDescription<'tcx> for queries::is_sanitizer_runtime<'tcx> {
 impl<'tcx> QueryDescription<'tcx> for queries::reachable_non_generics<'tcx> {
     fn describe(_tcx: TyCtxt<'_, '_, '_>, _: CrateNum) -> Cow<'static, str> {
         "looking up the exported symbols of a crate".into()
-    }
-}
-
-impl<'tcx> QueryDescription<'tcx> for queries::native_libraries<'tcx> {
-    fn describe(_tcx: TyCtxt<'_, '_, '_>, _: CrateNum) -> Cow<'static, str> {
-        "looking up the native libraries of a linked crate".into()
     }
 }
 
@@ -877,7 +853,7 @@ impl<'tcx> QueryDescription<'tcx> for queries::output_filenames<'tcx> {
 
 impl<'tcx> QueryDescription<'tcx> for queries::vtable_methods<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, key: ty::PolyTraitRef<'tcx> ) -> Cow<'static, str> {
-        format!("finding all methods for trait {}", tcx.item_path_str(key.def_id())).into()
+        format!("finding all methods for trait {}", tcx.def_path_str(key.def_id())).into()
     }
 }
 
@@ -904,24 +880,9 @@ impl<'tcx> QueryDescription<'tcx> for queries::typeck_tables_of<'tcx> {
     }
 }
 
-impl<'tcx> QueryDescription<'tcx> for queries::optimized_mir<'tcx> {
-    #[inline]
-    fn cache_on_disk(_: TyCtxt<'_, 'tcx, 'tcx>, def_id: Self::Key) -> bool {
-        def_id.is_local()
-    }
-
-    fn try_load_from_disk<'a>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                              id: SerializedDepNodeIndex)
-                              -> Option<Self::Value> {
-        let mir: Option<crate::mir::Mir<'tcx>> = tcx.queries.on_disk_cache
-                                               .try_load_query_result(tcx, id);
-        mir.map(|x| tcx.alloc_mir(x))
-    }
-}
-
 impl<'tcx> QueryDescription<'tcx> for queries::substitute_normalize_and_test_predicates<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, key: (DefId, SubstsRef<'tcx>)) -> Cow<'static, str> {
-        format!("testing substituted normalized predicates:`{}`", tcx.item_path_str(key.0)).into()
+        format!("testing substituted normalized predicates:`{}`", tcx.def_path_str(key.0)).into()
     }
 }
 
@@ -939,52 +900,13 @@ impl<'tcx> QueryDescription<'tcx> for queries::target_features_whitelist<'tcx> {
 
 impl<'tcx> QueryDescription<'tcx> for queries::instance_def_size_estimate<'tcx> {
     fn describe(tcx: TyCtxt<'_, '_, '_>, def: ty::InstanceDef<'tcx>) -> Cow<'static, str> {
-        format!("estimating size for `{}`", tcx.item_path_str(def.def_id())).into()
-    }
-}
-
-impl<'tcx> QueryDescription<'tcx> for queries::generics_of<'tcx> {
-    #[inline]
-    fn cache_on_disk(_: TyCtxt<'_, 'tcx, 'tcx>, def_id: Self::Key) -> bool {
-        def_id.is_local()
-    }
-
-    fn try_load_from_disk<'a>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                              id: SerializedDepNodeIndex)
-                              -> Option<Self::Value> {
-        let generics: Option<ty::Generics> = tcx.queries.on_disk_cache
-                                                .try_load_query_result(tcx, id);
-        generics.map(|x| tcx.alloc_generics(x))
-    }
-}
-
-impl<'tcx> QueryDescription<'tcx> for queries::program_clauses_for<'tcx> {
-    fn describe(_tcx: TyCtxt<'_, '_, '_>, _: DefId) -> Cow<'static, str> {
-        "generating chalk-style clauses".into()
-    }
-}
-
-impl<'tcx> QueryDescription<'tcx> for queries::program_clauses_for_env<'tcx> {
-    fn describe(_tcx: TyCtxt<'_, '_, '_>, _: traits::Environment<'tcx>) -> Cow<'static, str> {
-        "generating chalk-style clauses for environment".into()
-    }
-}
-
-impl<'tcx> QueryDescription<'tcx> for queries::environment<'tcx> {
-    fn describe(_tcx: TyCtxt<'_, '_, '_>, _: DefId) -> Cow<'static, str> {
-        "return a chalk-style environment".into()
-    }
-}
-
-impl<'tcx> QueryDescription<'tcx> for queries::wasm_import_module_map<'tcx> {
-    fn describe(_tcx: TyCtxt<'_, '_, '_>, _: CrateNum) -> Cow<'static, str> {
-        "wasm import module map".into()
+        format!("estimating size for `{}`", tcx.def_path_str(def.def_id())).into()
     }
 }
 
 impl<'tcx> QueryDescription<'tcx> for queries::dllimport_foreign_items<'tcx> {
     fn describe(_tcx: TyCtxt<'_, '_, '_>, _: CrateNum) -> Cow<'static, str> {
-        "wasm import module map".into()
+        "dllimport_foreign_items".into()
     }
 }
 
@@ -1018,10 +940,8 @@ impl_disk_cacheable_query!(mir_borrowck, |tcx, def_id| {
 
 impl_disk_cacheable_query!(unsafety_check_result, |_, def_id| def_id.is_local());
 impl_disk_cacheable_query!(borrowck, |_, def_id| def_id.is_local());
-impl_disk_cacheable_query!(mir_const_qualif, |_, def_id| def_id.is_local());
 impl_disk_cacheable_query!(check_match, |_, def_id| def_id.is_local());
 impl_disk_cacheable_query!(def_symbol_name, |_, _| true);
-impl_disk_cacheable_query!(type_of, |_, def_id| def_id.is_local());
 impl_disk_cacheable_query!(predicates_of, |_, def_id| def_id.is_local());
 impl_disk_cacheable_query!(used_trait_imports, |_, def_id| def_id.is_local());
 impl_disk_cacheable_query!(codegen_fn_attrs, |_, _| true);

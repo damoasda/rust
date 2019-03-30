@@ -164,6 +164,9 @@ pub struct Session {
 
     /// Cap lint level specified by a driver specifically.
     pub driver_lint_caps: FxHashMap<lint::LintId, lint::Level>,
+
+    /// `Span`s of trait methods that weren't found to avoid emitting object safety errors
+    pub trait_methods_not_found: OneThread<RefCell<FxHashSet<Span>>>,
 }
 
 pub struct PerfStats {
@@ -311,7 +314,7 @@ impl Session {
     pub fn abort_if_errors(&self) {
         self.diagnostic().abort_if_errors();
     }
-    pub fn compile_status(&self) -> Result<(), CompileIncomplete> {
+    pub fn compile_status(&self) -> Result<(), ErrorReported> {
         compile_result_from_err_count(self.err_count())
     }
     pub fn track_errors<F, T>(&self, f: F) -> Result<T, ErrorReported>
@@ -1124,7 +1127,7 @@ pub fn build_session_with_source_map(
     build_session_(sopts, local_crate_source_file, diagnostic_handler, source_map, lint_caps)
 }
 
-pub fn build_session_(
+fn build_session_(
     sopts: config::Options,
     local_crate_source_file: Option<PathBuf>,
     span_diagnostic: errors::Handler,
@@ -1230,6 +1233,7 @@ pub fn build_session_(
         has_global_allocator: Once::new(),
         has_panic_handler: Once::new(),
         driver_lint_caps,
+        trait_methods_not_found: OneThread::new(RefCell::new(Default::default())),
     };
 
     validate_commandline_args_with_session_available(&sess);
@@ -1315,7 +1319,7 @@ pub fn early_error(output: config::ErrorOutputType, msg: &str) -> ! {
             Box::new(EmitterWriter::stderr(color_config, None, true, false))
         }
     };
-    let handler = errors::Handler::with_emitter(true, false, emitter);
+    let handler = errors::Handler::with_emitter(true, None, emitter);
     handler.emit(&MultiSpan::new(), msg, errors::Level::Fatal);
     errors::FatalError.raise();
 }
@@ -1330,26 +1334,16 @@ pub fn early_warn(output: config::ErrorOutputType, msg: &str) {
             Box::new(EmitterWriter::stderr(color_config, None, true, false))
         }
     };
-    let handler = errors::Handler::with_emitter(true, false, emitter);
+    let handler = errors::Handler::with_emitter(true, None, emitter);
     handler.emit(&MultiSpan::new(), msg, errors::Level::Warning);
 }
 
-#[derive(Copy, Clone, Debug)]
-pub enum CompileIncomplete {
-    Stopped,
-    Errored(ErrorReported),
-}
-impl From<ErrorReported> for CompileIncomplete {
-    fn from(err: ErrorReported) -> CompileIncomplete {
-        CompileIncomplete::Errored(err)
-    }
-}
-pub type CompileResult = Result<(), CompileIncomplete>;
+pub type CompileResult = Result<(), ErrorReported>;
 
 pub fn compile_result_from_err_count(err_count: usize) -> CompileResult {
     if err_count == 0 {
         Ok(())
     } else {
-        Err(CompileIncomplete::Errored(ErrorReported))
+        Err(ErrorReported)
     }
 }

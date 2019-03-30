@@ -42,8 +42,8 @@ use syntax::symbol::Symbol;
 use syntax_pos::Span;
 
 pub use crate::lint::context::{LateContext, EarlyContext, LintContext, LintStore,
-                        check_crate, check_ast_crate, CheckLintNameResult,
-                        FutureIncompatibleInfo, BufferedEarlyLint};
+                        check_crate, check_ast_crate, late_lint_mod, CheckLintNameResult,
+                        FutureIncompatibleInfo, BufferedEarlyLint,};
 
 /// Specification of a single lint.
 #[derive(Copy, Clone, Debug)]
@@ -273,6 +273,9 @@ macro_rules! expand_lint_pass_methods {
 macro_rules! declare_late_lint_pass {
     ([], [$hir:tt], [$($methods:tt)*]) => (
         pub trait LateLintPass<'a, $hir>: LintPass {
+            fn fresh_late_pass(&self) -> LateLintPassObject {
+                panic!()
+            }
             expand_lint_pass_methods!(&LateContext<'a, $hir>, [$($methods)*]);
         }
     )
@@ -298,14 +301,14 @@ macro_rules! expand_combined_late_lint_pass_methods {
 
 #[macro_export]
 macro_rules! declare_combined_late_lint_pass {
-    ([$name:ident, [$($passes:ident: $constructor:expr,)*]], [$hir:tt], $methods:tt) => (
+    ([$v:vis $name:ident, [$($passes:ident: $constructor:expr,)*]], [$hir:tt], $methods:tt) => (
         #[allow(non_snake_case)]
-        struct $name {
+        $v struct $name {
             $($passes: $passes,)*
         }
 
         impl $name {
-            fn new() -> Self {
+            $v fn new() -> Self {
                 Self {
                     $($passes: $constructor,)*
                 }
@@ -721,6 +724,11 @@ pub fn struct_lint_level<'a>(sess: &'a Session,
     return err
 }
 
+pub fn maybe_lint_level_root(tcx: TyCtxt<'_, '_, '_>, id: hir::HirId) -> bool {
+    let attrs = tcx.hir().attrs_by_hir_id(id);
+    attrs.iter().any(|attr| Level::from_str(&attr.name_or_empty()).is_some())
+}
+
 fn lint_levels<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, cnum: CrateNum)
     -> Lrc<LintLevelMap>
 {
@@ -731,9 +739,10 @@ fn lint_levels<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, cnum: CrateNum)
     };
     let krate = tcx.hir().krate();
 
-    builder.with_lint_attrs(hir::CRATE_HIR_ID, &krate.attrs, |builder| {
-        intravisit::walk_crate(builder, krate);
-    });
+    let push = builder.levels.push(&krate.attrs);
+    builder.levels.register_id(hir::CRATE_HIR_ID);
+    intravisit::walk_crate(&mut builder, krate);
+    builder.levels.pop(push);
 
     Lrc::new(builder.levels.build_map())
 }
@@ -751,7 +760,9 @@ impl<'a, 'tcx> LintLevelMapBuilder<'a, 'tcx> {
         where F: FnOnce(&mut Self)
     {
         let push = self.levels.push(attrs);
-        self.levels.register_id(id);
+        if push.changed {
+            self.levels.register_id(id);
+        }
         f(self);
         self.levels.pop(push);
     }
@@ -790,7 +801,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for LintLevelMapBuilder<'a, 'tcx> {
                      v: &'tcx hir::Variant,
                      g: &'tcx hir::Generics,
                      item_id: hir::HirId) {
-        self.with_lint_attrs(v.node.data.hir_id(), &v.node.attrs, |builder| {
+        self.with_lint_attrs(v.node.id, &v.node.attrs, |builder| {
             intravisit::walk_variant(builder, v, g, item_id);
         })
     }
@@ -820,7 +831,8 @@ pub fn provide(providers: &mut Providers<'_>) {
 
 /// Returns whether `span` originates in a foreign crate's external macro.
 ///
-/// This is used to test whether a lint should be entirely aborted above.
+/// This is used to test whether a lint should not even begin to figure out whether it should
+/// be reported on the current node.
 pub fn in_external_macro(sess: &Session, span: Span) -> bool {
     let info = match span.ctxt().outer().expn_info() {
         Some(info) => info,
@@ -844,5 +856,19 @@ pub fn in_external_macro(sess: &Session, span: Span) -> bool {
         Ok(code) => !code.starts_with("macro_rules"),
         // no snippet = external macro or compiler-builtin expansion
         Err(_) => true,
+    }
+}
+
+/// Returns whether `span` originates in a derive macro's expansion
+pub fn in_derive_expansion(span: Span) -> bool {
+    let info = match span.ctxt().outer().expn_info() {
+        Some(info) => info,
+        // no ExpnInfo means this span doesn't come from a macro
+        None => return false,
+    };
+
+    match info.format {
+        ExpnFormat::MacroAttribute(symbol) => symbol.as_str().starts_with("derive("),
+        _ => false,
     }
 }

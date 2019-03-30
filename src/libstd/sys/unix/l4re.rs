@@ -292,6 +292,10 @@ pub mod net {
 
         pub fn into_socket(self) -> Socket { self.inner }
 
+        pub fn peer_addr(&self) -> io::Result<SocketAddr> {
+            unimpl!();
+        }
+
         pub fn socket_addr(&self) -> io::Result<SocketAddr> {
             unimpl!();
         }
@@ -447,10 +451,10 @@ pub mod net {
     unsafe impl Send for LookupHost {}
 
 
-    impl<'a> TryFrom<&'a str> for LookupHost {
+    impl TryFrom<&str> for LookupHost {
         type Error = io::Error;
 
-        fn try_from(_v: &'a str) -> io::Result<LookupHost> {
+        fn try_from(_v: &str) -> io::Result<LookupHost> {
             unimpl!();
         }
     }
@@ -463,4 +467,3 @@ pub mod net {
         }
     }
 }
-

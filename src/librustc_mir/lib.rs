@@ -14,7 +14,6 @@ Rust MIR: a lowered representation of Rust. Also: an experiment!
 #![feature(const_fn)]
 #![feature(decl_macro)]
 #![feature(exhaustive_patterns)]
-#![feature(range_contains)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(rustc_attrs)]
 #![feature(never_type)]
@@ -54,7 +53,6 @@ pub mod interpret;
 pub mod monomorphize;
 pub mod const_eval;
 
-pub use hair::pattern::check_crate as matchck_crate;
 use rustc::ty::query::Providers;
 
 pub fn provide(providers: &mut Providers<'_>) {
